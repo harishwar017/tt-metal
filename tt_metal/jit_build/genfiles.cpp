@@ -25,10 +25,10 @@
 #include <tt_stl/unreachable.hpp>
 #include "build.hpp"
 #include "hlk_desc.hpp"
+#include "jit_build/jit_build_utils.hpp"
 #include "jit_build_options.hpp"
 #include "jit_build_settings.hpp"
 #include <tt-logger/tt-logger.hpp>
-#include "impl/context/metal_context.hpp"
 #include "impl/kernels/kernel.hpp"
 
 enum class UnpackToDestMode : uint8_t;
@@ -42,7 +42,8 @@ namespace tt::tt_metal {
 namespace {
 
 void gen_kernel_cpp(const string& src, const string& dst_name, const vector<string>& prolog) {
-    std::ofstream out(dst_name);
+    jit_build::utils::FileRenamer tmp(dst_name);
+    std::ofstream out(tmp.path());
     for (const string& s : prolog) {
         out << s;
     }
@@ -115,9 +116,10 @@ void jit_build_genfiles_triscs_src(
     // Here we generate an auxiliary header with defines added via add_define() call
     // this header is then included from the kernel
     // We also append the include path to generated dir to hlkc cmldline.
-    std::ofstream gen_defines_file;
     string generated_defines_fname = out_dir + "/defines_generated.h";
-    gen_defines_file.open(generated_defines_fname, std::ios_base::out);
+    jit_build::utils::FileRenamer tmp(generated_defines_fname);
+    std::ofstream gen_defines_file;
+    gen_defines_file.open(tmp.path(), std::ios_base::out);
     settings.process_defines([&gen_defines_file](const string& define, const string& value) {
         gen_defines_file << "#define " << define << " " << value << endl;
     });
@@ -165,8 +167,9 @@ void emit_unpack_data_formats(
     const std::vector<DataFormat>& src_formats_all_cbs,
     const std::vector<DataFormat>& dst_formats_all_cbs) {
     // TODO: we should be emitting "unsigned char", no reason to use up 4B per data format
+    jit_build::utils::FileRenamer tmp(unpack_data_format_descs);
     ofstream file_stream;
-    file_stream.open(unpack_data_format_descs);
+    file_stream.open(tmp.path());
     file_stream << "#pragma once\n\n";
     file_stream << create_formats_array_string(
         "constexpr std::int32_t",
@@ -208,8 +211,9 @@ void emit_pack_data_formats(
     const std::string& pack_data_format_descs,
     const std::vector<DataFormat>& src_formats_all_cbs,
     const std::vector<DataFormat>& dst_formats_all_cbs) {
+    jit_build::utils::FileRenamer tmp(pack_data_format_descs);
     ofstream file_stream;
-    file_stream.open(pack_data_format_descs);
+    file_stream.open(tmp.path());
     file_stream << "#pragma once\n\n";
     file_stream << create_formats_array_string(
         "constexpr unsigned char",
@@ -308,8 +312,9 @@ std::string array_to_string(const uint32_t arr[]) {
 }
 
 void emit_unpack_tile_dims(const std::string& unpack_tile_dims_descs, tt_hlk_desc& desc) {
+    jit_build::utils::FileRenamer tmp(unpack_tile_dims_descs);
     ofstream file_stream;
-    file_stream.open(unpack_tile_dims_descs);
+    file_stream.open(tmp.path());
     file_stream << "#pragma once\n\n";
     file_stream << create_formats_array_string("constexpr uint8_t", "unpack_tile_num_faces", NUM_CIRCULAR_BUFFERS, array_to_string(desc.buf_num_faces_arr));
     file_stream << create_formats_array_string("constexpr uint8_t", "unpack_partial_face", NUM_CIRCULAR_BUFFERS, array_to_string(desc.buf_partial_face_arr));
@@ -322,8 +327,9 @@ void emit_unpack_tile_dims(const std::string& unpack_tile_dims_descs, tt_hlk_des
 }
 
 void emit_pack_tile_dims(const std::string& pack_tile_dims_descs, tt_hlk_desc& desc) {
+    jit_build::utils::FileRenamer tmp(pack_tile_dims_descs);
     ofstream file_stream;
-    file_stream.open(pack_tile_dims_descs);
+    file_stream.open(tmp.path());
     file_stream << "#pragma once\n\n";
     file_stream << create_formats_array_string("constexpr uint8_t", "pack_tile_num_faces", NUM_CIRCULAR_BUFFERS, array_to_string(desc.buf_num_faces_arr));
     file_stream << create_formats_array_string("constexpr uint8_t", "pack_partial_face", NUM_CIRCULAR_BUFFERS, array_to_string(desc.buf_partial_face_arr));
@@ -351,9 +357,10 @@ void generate_tile_dims_descriptors(JitBuildOptions& options, const tt::ARCH /*a
 void generate_dst_accum_mode_descriptor(JitBuildOptions& options) {
     string dst_accum_format_descriptor = options.path + "chlkc_dst_accum_mode.h";
 
+    jit_build::utils::FileRenamer tmp(dst_accum_format_descriptor);
     ofstream file_stream;
 
-    file_stream.open(dst_accum_format_descriptor);
+    file_stream.open(tmp.path());
 
     if (options.fp32_dest_acc_en == 0) {
         file_stream << "constexpr bool DST_ACCUM_MODE = false;" << endl;
@@ -367,9 +374,10 @@ void generate_dst_accum_mode_descriptor(JitBuildOptions& options) {
 void generate_dst_sync_mode_descriptor(JitBuildOptions& options) {
     string dst_sync_mode_descriptor = options.path + "chlkc_dst_sync_mode.h";
 
+    jit_build::utils::FileRenamer tmp(dst_sync_mode_descriptor);
     ofstream file_stream;
 
-    file_stream.open(dst_sync_mode_descriptor);
+    file_stream.open(tmp.path());
 
     if (options.dst_full_sync_en) {
         file_stream << "#define DST_SYNC_MODE DstSync::SyncFull" << endl;
@@ -385,9 +393,10 @@ void generate_math_fidelity_descriptor(JitBuildOptions& options) {
     // assuming all cores within a op have the same desc
     tt_hlk_desc& desc = options.hlk_desc;
 
+    jit_build::utils::FileRenamer tmp(math_fidelity_descriptor);
     ofstream file_stream;
 
-    file_stream.open(math_fidelity_descriptor);
+    file_stream.open(tmp.path());
     file_stream << "constexpr std::int32_t MATH_FIDELITY = " << (int)desc.get_hlk_math_fidelity() << ";" << endl;
     file_stream.close();
 }
@@ -398,9 +407,10 @@ void generate_math_approx_mode_descriptor(JitBuildOptions& options) {
     // assuming all cores within a op have the same desc
     tt_hlk_desc& desc = options.hlk_desc;
 
+    jit_build::utils::FileRenamer tmp(approx_descriptor);
     ofstream file_stream;
 
-    file_stream.open(approx_descriptor);
+    file_stream.open(tmp.path());
     file_stream << "constexpr bool APPROX = " << std::boolalpha << desc.get_hlk_math_approx_mode() << ";" << endl;
     file_stream.close();
 }

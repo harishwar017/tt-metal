@@ -146,13 +146,21 @@ std::pair<std::string, std::string> get_op_init_and_func_parameterized(
             // power_tile expects exponent as IEEE 754 float bits
             // For float: bit_cast preserves IEEE 754 bit pattern
             // For int/uint32_t: convert to float first, then bit_cast to get float bits
+            float exp_float;
             uint32_t exponent;
             if constexpr (std::is_same_v<T, float>) {
+                exp_float = params[0];
                 exponent = std::bit_cast<uint32_t>(params[0]);
             } else {
-                exponent = std::bit_cast<uint32_t>(static_cast<float>(params[0]));
+                exp_float = static_cast<float>(params[0]);
+                exponent = std::bit_cast<uint32_t>(exp_float);
             }
-            return {"power_tile_init();", fmt::format("power_tile({}, {:#x}u);", idst, exponent)};
+            bool legacy_compat = (exp_float == 0.0f || exp_float == 1.0f || exp_float == 2.0f || exp_float == 3.0f);
+            if (legacy_compat) {
+                return {"power_tile_init<true>();", fmt::format("power_tile<true>({}, {:#x}u);", idst, exponent)};
+            } else {
+                return {"power_tile_init<>();", fmt::format("power_tile<>({}, {:#x}u);", idst, exponent)};
+            }
         }
         case UnaryOpType::LEAKY_RELU:
             return {

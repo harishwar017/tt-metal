@@ -40,7 +40,7 @@ namespace sfpu {
  *      ( https://doi.org/10.1109/MSP.2022.3157460 )
  */
 template <bool IS_POSITIVE_EXPONENT>
-sfpi_inline sfpi::vFloat _sfpu_unary_power(sfpi::vFloat base, sfpi::vFloat pow) {
+sfpi_inline sfpi::vFloat _sfpu_unary_power_21f_(sfpi::vFloat base, sfpi::vFloat pow) {
     // The algorithm works in two steps:
     // 1) Compute log2(base)
     // 2) Compute base**pow = 2**(pow * log2(base))
@@ -152,59 +152,75 @@ sfpi_inline sfpi::vFloat _sfpu_unary_power(sfpi::vFloat base, sfpi::vFloat pow) 
     return y;
 }
 
-template <bool APPROXIMATION_MODE, int ITERATIONS = 8>
-inline void calculate_power_iterative(const uint32_t exponent) {
-    // exponent contains IEEE 754 float bits (converted by compute_kernel_api.h)
+template <int ITERATIONS>
+inline void _power_iterative_(const uint32_t exponent) {
+    // Old iterative approach for integer exponents 0, 1, 2, 3
+    // exponent contains IEEE 754 float bits - convert to actual integer
+    const float exp_float = Converter::as_float(exponent);
+    const uint exp = (uint)exp_float;
+#pragma GCC unroll 8
+    for (int d = 0; d < ITERATIONS; d++) {
+        vFloat in = dst_reg[0];
+        vFloat result = 1.0f;
+        uint e = exp;
+        while (e > 0) {
+            if (e & 1) {
+                result *= in;
+            }
+            in *= in;
+            e >>= 1;
+        }
+        dst_reg[0] = result;
+        dst_reg++;
+    }
+}
+
+template <int ITERATIONS>
+inline void _sfpu_unary_power_(const uint32_t exponent) {
+    // Convert exponent to float
     const float pow_scalar = Converter::as_float(exponent);
     const sfpi::vFloat pow = pow_scalar;
-    if (pow_scalar == 0.0f) {
-        // x^0 = 1 for all x
-        for (int d = 0; d < ITERATIONS; d++) {
-            sfpi::dst_reg[0] = 1.0f;
-            sfpi::dst_reg++;
-        }
-    } else if (pow_scalar == 1.0f) {
-        // x^1 = x
-        for (int d = 0; d < ITERATIONS; d++) {
-            sfpi::dst_reg++;
-        }
-    } else if (pow_scalar == 2.0f) {
-        // x^2 = x * x
-#pragma GCC unroll 8
-        for (int d = 0; d < ITERATIONS; d++) {
-            sfpi::vFloat in = sfpi::dst_reg[0];
-            sfpi::dst_reg[0] = in * in;
-            sfpi::dst_reg++;
-        }
-    } else if (pow_scalar == 3.0f) {
-        // x^3 = x * x * x
-#pragma GCC unroll 8
-        for (int d = 0; d < ITERATIONS; d++) {
-            sfpi::vFloat in = sfpi::dst_reg[0];
-            sfpi::dst_reg[0] = in * in * in;
-            sfpi::dst_reg++;
-        }
-    } else if (pow_scalar >= 0.0f) {
+
+    if (pow_scalar >= 0.0f) {
 #pragma GCC unroll 8
         for (int d = 0; d < ITERATIONS; d++) {
             sfpi::vFloat base = sfpi::dst_reg[0];
-            sfpi::dst_reg[0] = _sfpu_unary_power<true>(base, pow);
+            sfpi::dst_reg[0] = _sfpu_unary_power_21f_<true>(base, pow);
             sfpi::dst_reg++;
         }
     } else {
 #pragma GCC unroll 8
         for (int d = 0; d < ITERATIONS; d++) {
             sfpi::vFloat base = sfpi::dst_reg[0];
-            sfpi::dst_reg[0] = _sfpu_unary_power<false>(base, pow);
+            sfpi::dst_reg[0] = _sfpu_unary_power_21f_<false>(base, pow);
             sfpi::dst_reg++;
         }
     }
 }
 
+/**
+ * @brief Compute power operation with optional legacy compatibility mode
+ *
+ * @tparam legacy_compat When false (default), always use 21f Approach.
+ *                       When true , use old iterative approach for exponents 0, 1, 2, 3 - Faster approach
+ * @param exponent The exponent as IEEE 754 float bits (reinterpreted as uint32_t)
+ */
+template <bool APPROXIMATION_MODE, int ITERATIONS = 8, bool legacy_compat = false>
+inline void calculate_unary_power(const uint32_t exponent) {
+    if constexpr (!legacy_compat) {
+        _sfpu_unary_power_<ITERATIONS>(exponent);
+    } else {
+        _power_iterative_<ITERATIONS>(exponent);
+    }
+}
+
+template <bool legacy_compat = false>
 inline void sfpu_unary_pow_init() {
-    sfpi::vConstFloatPrgm0 = 1.4426950408889634f;
-    sfpi::vConstFloatPrgm1 = -127.0f;
-    sfpi::vConstFloatPrgm2 = std::numeric_limits<float>::quiet_NaN();
+    if constexpr (!legacy_compat) {
+        sfpi::vConstFloatPrgm0 = 1.4426950408889634f;
+        sfpi::vConstFloatPrgm1 = -127.0f;
+        sfpi::vConstFloatPrgm2 = std::numeric_limits<float>::quiet_NaN();
+    }
 }
 
 }  // namespace sfpu

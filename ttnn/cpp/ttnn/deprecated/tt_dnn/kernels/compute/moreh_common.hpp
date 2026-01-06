@@ -1028,8 +1028,8 @@ ALWI void power_tile_to_cb(
     copy_tile_init_with_dt(cb_x);
     copy_tile(cb_x, 0, dst0);
 
-    power_tile_init();
-    power_tile(dst0, p);
+    power_tile_init<true>();
+    power_tile<true>(dst0, p);
 
     if (p_is_negative) {
         recip_tile_init();
@@ -1123,8 +1123,8 @@ ALWI void power_tile_with_abs_x_to_cb(
     abs_tile_init();
     abs_tile(dst0);
 
-    power_tile_init();
-    power_tile(dst0, p);
+    power_tile_init<true>();
+    power_tile<true>(dst0, p);
 
     if (p_is_negative) {
         recip_tile_init();
@@ -1218,8 +1218,8 @@ ALWI void power_and_recip_tile_to_cb(
     copy_tile_init_with_dt(cb_x);
     copy_tile(cb_x, 0, dst0);
 
-    power_tile_init();
-    power_tile(dst0, p);
+    power_tile_init<true>();
+    power_tile<true>(dst0, p);
 
     if (p_is_negative) {
         recip_tile_init();

@@ -29,7 +29,7 @@ std::pair<uint32_t, uint32_t> decode_noc_addr_to_coord(uint64_t noc_addr) {
 }
 
 FORCE_INLINE
-uint32_t decode_noc_addr_to_l1_addr(uint64_t noc_addr) { return noc_addr & 0xFFFFFFFF; }
+uint32_t decode_noc_addr_to_local_addr(uint64_t noc_addr) { return NOC_LOCAL_ADDR_OFFSET(noc_addr); }
 
 FORCE_INLINE
 std::tuple<uint32_t, uint32_t, uint32_t, uint32_t> decode_noc_addr_to_multicast_coord(uint64_t noc_addr) {
@@ -148,16 +148,16 @@ FORCE_INLINE void recordNocEventWithID(
         has_required_addrgen_traits_v<AddrGen>,
         "AddrGen must have get_noc_addr() and either page_size or log_base_2_of_page_size member variable");
     auto [decoded_x, decoded_y] = decode_noc_id_into_coord<addrgen.is_dram>(noc_id);
-    auto l1_addr = decode_noc_addr_to_l1_addr(get_noc_addr_from_bank_id<addrgen.is_dram>(noc_id, offset, noc_index));
-    recordNocEvent<noc_event_type>(decoded_x, decoded_y, num_bytes, vc, noc_index, l1_addr);
+    auto addr = decode_noc_addr_to_local_addr(get_noc_addr_from_bank_id<addrgen.is_dram>(noc_id, offset, noc_index));
+    recordNocEvent<noc_event_type>(decoded_x, decoded_y, num_bytes, vc, noc_index, addr);
 }
 
 template <KernelProfilerNocEventMetadata::NocEventType noc_event_type, typename NocAddrU64>
 FORCE_INLINE void recordNocEventWithAddr(NocAddrU64 noc_addr, uint32_t num_bytes, int8_t vc) {
     static_assert(std::is_same_v<NocAddrU64, uint64_t>);
     auto [decoded_x, decoded_y] = decode_noc_addr_to_coord(noc_addr);
-    auto l1_addr = decode_noc_addr_to_l1_addr(noc_addr);
-    recordNocEvent<noc_event_type>(decoded_x, decoded_y, num_bytes, vc, noc_index, l1_addr);
+    auto addr = decode_noc_addr_to_local_addr(noc_addr);
+    recordNocEvent<noc_event_type>(decoded_x, decoded_y, num_bytes, vc, noc_index, addr);
 }
 }  // namespace noc_event_profiler
 

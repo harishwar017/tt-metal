@@ -26,7 +26,7 @@ void kernel_main() {
                 .addr = i,
             },
             {});
-
+        noc.async_read_barrier();
         noc.async_write(
             local_buffer,
             unicast_endpoint,
@@ -37,5 +37,6 @@ void kernel_main() {
                 .noc_y = OTHER_CORE_Y,
                 .addr = i,
             });
+        noc.async_write_barrier();
     }
 }

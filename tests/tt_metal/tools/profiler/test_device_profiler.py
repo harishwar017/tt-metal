@@ -351,10 +351,27 @@ def test_device_api_debugger_non_dropping():
     ncrisc_read_dst_addrs_found = set()
     ncrisc_write_dst_addrs_found = set()
 
+    # Track barrier events
+    read_barrier_start_count = 0
+    read_barrier_end_count = 0
+    write_barrier_start_count = 0
+    write_barrier_end_count = 0
+
     for event in noc_trace_data:
         assert isinstance(event, dict), f"noc trace file format error; found event that is not a dict"
+        event_type = event.get("type")
+
+        # Count barrier events
+        if event_type == "READ_BARRIER_START":
+            read_barrier_start_count += 1
+        elif event_type == "READ_BARRIER_END":
+            read_barrier_end_count += 1
+        elif event_type == "WRITE_BARRIER_START":
+            write_barrier_start_count += 1
+        elif event_type == "WRITE_BARRIER_END":
+            write_barrier_end_count += 1
+
         if "dst_addr" in event and "proc" in event:
-            event_type = event.get("type")
             proc = event["proc"]
             dst_addr = event["dst_addr"]
 
@@ -402,6 +419,21 @@ def test_device_api_debugger_non_dropping():
         f"{'...' if len(missing_ncrisc_write_dst_addrs) > 20 else ''} "
         f"(found {len(ncrisc_write_dst_addrs_found)} out of {len(expected_dst_addrs)} expected)"
     )
+
+    # Verify barrier event counts
+    expected_barrier_count = 10000
+    assert (
+        read_barrier_start_count == expected_barrier_count
+    ), f"Expected {expected_barrier_count} READ_BARRIER_START events, found {read_barrier_start_count}"
+    assert (
+        read_barrier_end_count == expected_barrier_count
+    ), f"Expected {expected_barrier_count} READ_BARRIER_END events, found {read_barrier_end_count}"
+    assert (
+        write_barrier_start_count == expected_barrier_count
+    ), f"Expected {expected_barrier_count} WRITE_BARRIER_START events, found {write_barrier_start_count}"
+    assert (
+        write_barrier_end_count == expected_barrier_count
+    ), f"Expected {expected_barrier_count} WRITE_BARRIER_END events, found {write_barrier_end_count}"
 
 
 def wildcard_match(pattern, words):

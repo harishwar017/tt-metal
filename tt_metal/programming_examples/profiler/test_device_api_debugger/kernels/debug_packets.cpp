@@ -26,5 +26,16 @@ void kernel_main() {
                 .addr = i,
             },
             {});
+
+        noc.async_write(
+            local_buffer,
+            unicast_endpoint,
+            num_bytes,
+            {},
+            {
+                .noc_x = OTHER_CORE_X,
+                .noc_y = OTHER_CORE_Y,
+                .addr = i,
+            });
     }
 }

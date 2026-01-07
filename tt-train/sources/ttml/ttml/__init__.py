@@ -87,17 +87,15 @@ def _initialize():
     import os
     from pathlib import Path
 
-    tt_metal_home = os.getenv("TT_METAL_HOME")
-    if not tt_metal_home:
-        tt_metal_home = Path.home() / "tt-metal"
-        if not tt_metal_home.exists():
-            raise EnvironmentError(
-                "TT_METAL_HOME environment variable is not set and "
-                f"default path {tt_metal_home} does not exist. "
-                "Please set TT_METAL_HOME to your tt-metal installation directory."
-            )
-    else:
-        tt_metal_home = Path(tt_metal_home)
+    # Auto-detect from tt-metal/tt-train structure
+    current_dir = Path(__file__).parent
+    tt_metal_home = (
+        current_dir.parent.parent.parent
+    )  # Go up from sources/ttml/ to tt-metal/
+    if not (tt_metal_home / "tt_metal" / "CMakeLists.txt").exists():
+        raise EnvironmentError(
+            f"Unable to auto-detect TT_METAL_HOME. Expected to find tt_metal/CMakeLists.txt in {tt_metal_home}"
+        )
 
     ttml_dir = tt_metal_home / "build" / "tt-train" / "sources" / "ttml"
 

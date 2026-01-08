@@ -61,7 +61,11 @@ struct alignas(uint64_t) KernelProfilerNocEventMetadata {
         READ_TRAILER = 39,
         WRITE_TRAILER = 40,
 
-        UNSUPPORTED = 41,
+        LOCAL_MEM_READ_WRITE = 41,
+        LOCAL_MEM_READ = 42,
+        LOCAL_MEM_WRITE = 43,
+
+        UNSUPPORTED = 44,
     };
 
     enum class NocType : unsigned char { UNDEF = 0, NOC_0 = 1, NOC_1 = 2 };
@@ -90,6 +94,11 @@ struct alignas(uint64_t) KernelProfilerNocEventMetadata {
     struct LocalNocEventTrailer {
         NocEventType noc_xfer_type;
         uint32_t dst_addr;
+    } __attribute__((packed));
+
+    struct LocalMemoryEvent {
+        NocEventType noc_xfer_type;
+        uint32_t addr;
     } __attribute__((packed));
 
     // represents a fabric NOC event
@@ -138,6 +147,7 @@ struct alignas(uint64_t) KernelProfilerNocEventMetadata {
         RawEvent raw_event;
         LocalNocEvent local_event;
         LocalNocEventTrailer local_event_trailer;
+        LocalMemoryEvent local_memory_event;
         FabricNoCEvent fabric_event;
         FabricNoCScatterEvent fabric_scatter_event;
         FabricRoutingFields1D fabric_routing_fields_1d;
@@ -152,7 +162,7 @@ struct alignas(uint64_t) KernelProfilerNocEventMetadata {
     }
 
     static bool isValidEventType(NocEventType event_type) {
-        return event_type >= NocEventType::READ && event_type <= NocEventType::WRITE_TRAILER;
+        return event_type >= NocEventType::READ && event_type <= NocEventType::LOCAL_MEM_READ;
     }
 
     static bool isFabricEventType(NocEventType event_type) {
@@ -186,10 +196,16 @@ struct alignas(uint64_t) KernelProfilerNocEventMetadata {
         return event_type == NocEventType::READ_TRAILER || event_type == NocEventType::WRITE_TRAILER;
     }
 
+    static bool isLocalMemoryEvent(NocEventType event_type) {
+        return event_type == NocEventType::LOCAL_MEM_READ || event_type == NocEventType::LOCAL_MEM_WRITE ||
+               event_type == NocEventType::LOCAL_MEM_READ_WRITE;
+    }
+
     // Getter to return the correct variant based on the tag
     std::variant<
         LocalNocEvent,
         LocalNocEventTrailer,
+        LocalMemoryEvent,
         FabricNoCEvent,
         FabricNoCScatterEvent,
         FabricRoutingFields1D,
@@ -207,6 +223,8 @@ struct alignas(uint64_t) KernelProfilerNocEventMetadata {
             return data.fabric_routing_fields_2d;
         } else if (isLocalEventTrailer(data.raw_event.noc_xfer_type)) {
             return data.local_event_trailer;
+        } else if (isLocalMemoryEvent(data.raw_event.noc_xfer_type)) {
+            return data.local_memory_event;
         } else {
             return data.local_event;
         }

@@ -39,4 +39,6 @@ void kernel_main() {
             });
         noc.async_write_barrier();
     }
+
+    [[maybe_unused]] volatile auto rd = local_buffer[0];
 }

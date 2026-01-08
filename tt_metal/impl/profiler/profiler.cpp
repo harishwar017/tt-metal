@@ -801,6 +801,19 @@ std::unordered_map<experimental::ProgramExecutionUID, nlohmann::json::array_t> c
                     // This trailer wasn't matched (shouldn't happen in normal operation)
                     // Skip it to avoid duplicate entries
                     continue;
+                } else if (std::holds_alternative<EMD::LocalMemoryEvent>(EMD(device_marker.data).getContents())) {
+                    auto local_memory_event = std::get<EMD::LocalMemoryEvent>(EMD(device_marker.data).getContents());
+                    json_events_by_op[program_execution_uid].push_back(nlohmann::ordered_json{
+                        {"run_host_id", device_marker.runtime_host_id},
+                        {"op_name", device_marker.op_name},
+                        {"proc", enchantum::to_string(device_marker.risc)},
+                        {"src_device_id", device_marker.chip_id},
+                        {"sx", device_marker.core_x},
+                        {"sy", device_marker.core_y},
+                        {"addr", local_memory_event.addr},
+                        {"type", enchantum::to_string(local_memory_event.noc_xfer_type)},
+                        {"timestamp", device_marker.timestamp},
+                    });
                 } else {
                     TT_THROW("Invalid event type found in noc trace packet!");
                 }
@@ -1585,11 +1598,17 @@ void DeviceProfiler::readRiscProfilerResults(
                                                       !KernelProfilerNocEventMetadata::isFabricRoutingFields(
                                                           event_check.data.raw_event.noc_xfer_type) &&
                                                       !KernelProfilerNocEventMetadata::isLocalEventTrailer(
+                                                          event_check.data.raw_event.noc_xfer_type) &&
+                                                      !KernelProfilerNocEventMetadata::isLocalMemoryEvent(
                                                           event_check.data.raw_event.noc_xfer_type);
 
                             // Multicast events don't have trailers (recordMulticastNocEvent doesn't write them)
                             bool is_multicast_event = event_check.data.raw_event.noc_xfer_type ==
                                                       KernelProfilerNocEventMetadata::NocEventType::WRITE_MULTICAST;
+
+                            // Local memory events don't have trailers either
+                            bool is_local_memory_event = KernelProfilerNocEventMetadata::isLocalMemoryEvent(
+                                event_check.data.raw_event.noc_xfer_type);
 
                             readDeviceMarkerData(
                                 device_markers_for_core_risc,
@@ -1608,7 +1627,8 @@ void DeviceProfiler::readRiscProfilerResults(
                             // atomically immediately after LocalNocEvent data: Format: Timestamp -> LocalNocEvent ->
                             // EventTrailer The device-side code ensures there's enough space for both before writing
                             // either Note: Multicast events don't have trailers, so we skip the check for them
-                            if (getDeviceDebugDumpEnabled() && is_local_noc_event && !is_multicast_event) {
+                            if (getDeviceDebugDumpEnabled() && is_local_noc_event && !is_multicast_event &&
+                                !is_local_memory_event) {
                                 // Check if trailer is within buffer bounds (use <= to include boundary case)
                                 // The trailer might be at the exact boundary if bufferEndIndex doesn't account for it
                                 uint32_t trailer_index = index + kernel_profiler::PROFILER_L1_MARKER_UINT32_SIZE;

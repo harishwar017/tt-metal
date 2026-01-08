@@ -3539,6 +3539,7 @@ public:
      */
     T& operator[](uint32_t index) const {
         DEBUG_SANITIZE_L1_ADDR(address_ + (index + 1) * sizeof(T), sizeof(T));
+        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_ + (index + 1) * sizeof(T));
         return get_unsafe_ptr()[index];
     }
 
@@ -3548,6 +3549,7 @@ public:
      */
     T& operator*() const {
         DEBUG_SANITIZE_L1_ADDR(address_, sizeof(T));
+        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return get_unsafe_ptr()[0];
     }
 
@@ -3557,38 +3559,45 @@ public:
      */
     tt_l1_ptr T* operator->() const {
         DEBUG_SANITIZE_L1_ADDR(address_, sizeof(T));
+        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return get_unsafe_ptr();
     }
 
     CoreLocalMem& operator+=(difference_type offset) {
         address_ += offset * sizeof(T);
+        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return *this;
     }
 
     CoreLocalMem& operator-=(difference_type offset) {
         address_ -= offset * sizeof(T);
+        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return *this;
     }
 
     CoreLocalMem& operator++() {
         address_ += sizeof(T);
+        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return *this;
     }
 
     CoreLocalMem& operator--() {
         address_ -= sizeof(T);
+        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return *this;
     }
 
     CoreLocalMem operator++(int) {
         CoreLocalMem tmp = *this;
         operator++();
+        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return tmp;
     }
 
     CoreLocalMem operator--(int) {
         CoreLocalMem tmp = *this;
         operator--();
+        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return tmp;
     }
 

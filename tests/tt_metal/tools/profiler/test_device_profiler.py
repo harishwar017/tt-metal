@@ -421,7 +421,7 @@ def test_device_api_debugger_non_dropping():
     )
 
     # Verify barrier event counts
-    expected_barrier_count = 10000
+    expected_barrier_count = 20000
     assert (
         read_barrier_start_count == expected_barrier_count
     ), f"Expected {expected_barrier_count} READ_BARRIER_START events, found {read_barrier_start_count}"

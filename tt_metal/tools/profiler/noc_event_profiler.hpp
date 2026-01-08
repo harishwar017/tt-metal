@@ -159,6 +159,22 @@ FORCE_INLINE void recordNocEventWithAddr(NocAddrU64 noc_addr, uint32_t num_bytes
     auto addr = decode_noc_addr_to_local_addr(noc_addr);
     recordNocEvent<noc_event_type>(decoded_x, decoded_y, num_bytes, vc, noc_index, addr);
 }
+
+template <KernelProfilerNocEventMetadata::NocEventType noc_event_type, uint32_t STATIC_ID = 12345>
+FORCE_INLINE void recordLocalMemoryEvent(uint32_t addr) {
+    static_assert(
+        noc_event_type == KernelProfilerNocEventMetadata::NocEventType::LOCAL_MEM_READ ||
+        noc_event_type == KernelProfilerNocEventMetadata::NocEventType::LOCAL_MEM_WRITE ||
+        noc_event_type == KernelProfilerNocEventMetadata::NocEventType::LOCAL_MEM_READ_WRITE);
+    KernelProfilerNocEventMetadata ev_md;
+    auto& local_memory_event = ev_md.data.local_memory_event;
+    local_memory_event.noc_xfer_type = noc_event_type;
+    local_memory_event.addr = addr;
+
+    kernel_profiler::flush_to_dram_if_full<kernel_profiler::DoingDispatch::DISPATCH>();
+    kernel_profiler::timeStampedData<STATIC_ID, kernel_profiler::DoingDispatch::DISPATCH>(ev_md.asU64());
+}
+
 }  // namespace noc_event_profiler
 
 #define RECORD_NOC_EVENT_WITH_ADDR(event_type, noc_addr, num_bytes, vc)                                             \
@@ -186,6 +202,12 @@ FORCE_INLINE void recordNocEventWithAddr(NocAddrU64 noc_addr, uint32_t num_bytes
         noc_event_profiler::recordNocEvent<event_type>();                  \
     }
 
+#define RECORD_LOCAL_MEMORY_EVENT(event_type, addr)                        \
+    {                                                                      \
+        using NocEventType = KernelProfilerNocEventMetadata::NocEventType; \
+        noc_event_profiler::recordLocalMemoryEvent<event_type>(addr);      \
+    }
+
 // preemptive quick push if transitioning from unlinked state to linked state
 #define NOC_TRACE_QUICK_PUSH_IF_LINKED(cmd_buf, linked)         \
     {                                                           \
@@ -198,6 +220,7 @@ FORCE_INLINE void recordNocEventWithAddr(NocAddrU64 noc_addr, uint32_t num_bytes
 #define RECORD_NOC_EVENT_WITH_ADDR(type, noc_addr, num_bytes, vc)
 #define RECORD_NOC_EVENT_WITH_ID(type, noc_id, addrgen, offset, num_bytes, vc)
 #define RECORD_NOC_EVENT(type)
+#define RECORD_LOCAL_MEMORY_EVENT(type, addr)
 #define NOC_TRACE_QUICK_PUSH_IF_LINKED(cmd_buf, linked)
 
 #endif

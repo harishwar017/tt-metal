@@ -228,7 +228,7 @@ jobs:
 
   run-profiler-regression:
     needs: [parse-tests-json, build-artifact]
-    if: ${{ contains(needs.parse-tests-json.outputs.tests-to-run, 'run-profiler-regression') && !inputs.enable-watcher }}
+    if: ${{ contains(needs.parse-tests-json.outputs.tests-to-run, 'run-profiler-regression') && !inputs.enable-watcher && !inputs.enable-lightweight-kernel-asserts}}
     secrets: inherit
     strategy:
       fail-fast: false

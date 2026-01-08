@@ -3494,6 +3494,101 @@ class CoreLocalMem {
         sizeof(AddressType) >= sizeof(difference_type),
         "AddressType must be large enough to hold difference_type for safe pointer arithmetic");
 
+    // Proxy class to detect if an access to local memory is read or write.
+    class Proxy {
+    public:
+        Proxy(AddressType target_address) : target_address_(target_address) {}
+
+        FORCE_INLINE operator T() const {
+            RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ, target_address_);
+            return *reinterpret_cast<tt_l1_ptr T*>(target_address_);
+        }
+
+        FORCE_INLINE operator T() const volatile {
+            RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ, target_address_);
+            return *reinterpret_cast<tt_l1_ptr T*>(target_address_);
+        }
+
+        FORCE_INLINE Proxy& operator=(const T& val) {
+            RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_WRITE, target_address_);
+            *reinterpret_cast<tt_l1_ptr T*>(target_address_) = val;
+            return *this;
+        }
+
+        FORCE_INLINE Proxy& operator=(const Proxy& other) {
+            if (this != &other) {
+                T val = other;
+                *this = val;
+            }
+            return *this;
+        }
+
+        FORCE_INLINE Proxy& operator=(const T& val) volatile {
+            RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_WRITE, target_address_);
+            *reinterpret_cast<tt_l1_ptr T*>(target_address_) = val;
+            return const_cast<Proxy&>(*this);
+        }
+
+        FORCE_INLINE Proxy& operator=(const Proxy& other) volatile {
+            if (this != &other) {
+                T val = other;
+                const_cast<Proxy&>(*this) = val;
+            }
+            return const_cast<Proxy&>(*this);
+        }
+
+        FORCE_INLINE Proxy& operator+=(const T& val) {
+            RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_WRITE, target_address_);
+            auto ptr = reinterpret_cast<tt_l1_ptr T*>(target_address_);
+            T temp = *ptr;
+            temp += val;
+            *ptr = temp;
+
+            return *this;
+        }
+
+        FORCE_INLINE Proxy& operator-=(const T& val) {
+            RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_WRITE, target_address_);
+            auto ptr = reinterpret_cast<tt_l1_ptr T*>(target_address_);
+
+            T temp = *ptr;
+            temp -= val;
+            *ptr = temp;
+            return *this;
+        }
+
+        FORCE_INLINE Proxy& operator++() {
+            RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_WRITE, target_address_);
+            auto ptr = reinterpret_cast<tt_l1_ptr T*>(target_address_);
+
+            T temp = *ptr;
+            ++temp;
+            *ptr = temp;
+            return *this;
+        }
+
+        FORCE_INLINE T operator++(int) {
+            RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_WRITE, target_address_);
+            auto ptr = reinterpret_cast<tt_l1_ptr T*>(target_address_);
+            T old_val = *ptr;
+            T new_val = old_val + 1;
+            *ptr = new_val;
+            return old_val;
+        }
+
+        FORCE_INLINE T operator--(int) {
+            RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_WRITE, target_address_);
+            auto ptr = reinterpret_cast<tt_l1_ptr T*>(target_address_);
+            T old_val = *ptr;
+            T new_val = old_val - 1;
+            *ptr = new_val;
+            return old_val;
+        }
+
+    private:
+        AddressType target_address_;
+    };
+
 public:
     /** @brief Construct a CoreLocalMem instance from a raw address
      *
@@ -3524,7 +3619,11 @@ public:
      *
      * @return The raw pointer to the structure in the core's local memory
      */
-    tt_l1_ptr T* get_unsafe_ptr() const { return reinterpret_cast<tt_l1_ptr T*>(address_); }
+    tt_l1_ptr T* get_unsafe_ptr() const {
+        // As this will bypass the proxy, just log it as a read/write
+        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
+        return reinterpret_cast<tt_l1_ptr T*>(address_);
+    }
 
     /** @brief Get the memory address
      *
@@ -3535,22 +3634,20 @@ public:
     /** @brief Get the element at the given index
      *
      * @param index The index of the element to get
-     * @return Reference to the element at the given index
+     * @return Proxy to the element at the given index
      */
-    T& operator[](uint32_t index) const {
-        DEBUG_SANITIZE_L1_ADDR(address_ + (index + 1) * sizeof(T), sizeof(T));
-        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_ + (index + 1) * sizeof(T));
-        return get_unsafe_ptr()[index];
+    Proxy operator[](uint32_t index) const {
+        DEBUG_SANITIZE_L1_ADDR(address_ + index * sizeof(T), sizeof(T));
+        return Proxy(address_ + index * sizeof(T));
     }
 
-    /** @brief Dereference operator to get reference to the value
+    /** @brief Dereference operator to get proxy to the value
      *
-     * @return Reference to the value at the address
+     * @return Proxy to the value at the address
      */
-    T& operator*() const {
+    Proxy operator*() const {
         DEBUG_SANITIZE_L1_ADDR(address_, sizeof(T));
-        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
-        return get_unsafe_ptr()[0];
+        return Proxy(address_);
     }
 
     /** @brief Arrow operator for struct/class member access
@@ -3559,45 +3656,38 @@ public:
      */
     tt_l1_ptr T* operator->() const {
         DEBUG_SANITIZE_L1_ADDR(address_, sizeof(T));
-        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return get_unsafe_ptr();
     }
 
     CoreLocalMem& operator+=(difference_type offset) {
         address_ += offset * sizeof(T);
-        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return *this;
     }
 
     CoreLocalMem& operator-=(difference_type offset) {
         address_ -= offset * sizeof(T);
-        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return *this;
     }
 
     CoreLocalMem& operator++() {
         address_ += sizeof(T);
-        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return *this;
     }
 
     CoreLocalMem& operator--() {
         address_ -= sizeof(T);
-        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return *this;
     }
 
     CoreLocalMem operator++(int) {
         CoreLocalMem tmp = *this;
         operator++();
-        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return tmp;
     }
 
     CoreLocalMem operator--(int) {
         CoreLocalMem tmp = *this;
         operator--();
-        RECORD_LOCAL_MEMORY_EVENT(NocEventType::LOCAL_MEM_READ_WRITE, address_);
         return tmp;
     }
 

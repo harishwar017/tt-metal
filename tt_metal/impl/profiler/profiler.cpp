@@ -499,7 +499,8 @@ auto coalesceFabricEvents(
             auto current_event = EMD(markers[i].data).getContents();
             TT_FATAL(
                 EMD::isValidEventType(EMD(markers[i].data).data.raw_event.noc_xfer_type),
-                "Invalid NoC transfer type on device: {}.",
+                "Invalid NoC transfer type {} on device: {}.",
+                EMD(markers[i].data).data.raw_event.noc_xfer_type,
                 device_id);
             if (std::holds_alternative<EMD::FabricNoCScatterEvent>(current_event) ||
                 std::holds_alternative<EMD::FabricNoCEvent>(current_event)) {

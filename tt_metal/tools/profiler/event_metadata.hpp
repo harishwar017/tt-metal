@@ -162,7 +162,7 @@ struct alignas(uint64_t) KernelProfilerNocEventMetadata {
     }
 
     static bool isValidEventType(NocEventType event_type) {
-        return event_type >= NocEventType::READ && event_type <= NocEventType::LOCAL_MEM_READ;
+        return event_type >= NocEventType::READ && event_type <= NocEventType::LOCAL_MEM_WRITE;
     }
 
     static bool isFabricEventType(NocEventType event_type) {

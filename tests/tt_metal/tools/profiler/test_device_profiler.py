@@ -320,6 +320,7 @@ def test_full_buffer():
 
 
 def test_device_api_debugger_non_dropping():
+    NUM_DM_RISCS = 2
     ENV_VAR_ARCH_NAME = os.getenv("ARCH_NAME")
     assert ENV_VAR_ARCH_NAME in ["grayskull", "wormhole_b0", "blackhole"]
 
@@ -357,6 +358,15 @@ def test_device_api_debugger_non_dropping():
     write_barrier_start_count = 0
     write_barrier_end_count = 0
 
+    # Track local memory events
+    local_read_count = 0
+    local_write_count = 0
+    local_read_write_count = 0
+
+    expected_local_read_count = 2 * NUM_DM_RISCS
+    expected_local_write_count = 7 * NUM_DM_RISCS
+    expected_local_read_write_count = 2 * NUM_DM_RISCS
+
     for event in noc_trace_data:
         assert isinstance(event, dict), f"noc trace file format error; found event that is not a dict"
         event_type = event.get("type")
@@ -370,6 +380,12 @@ def test_device_api_debugger_non_dropping():
             write_barrier_start_count += 1
         elif event_type == "WRITE_BARRIER_END":
             write_barrier_end_count += 1
+        elif event_type == "LOCAL_MEM_READ":
+            local_read_count += 1
+        elif event_type == "LOCAL_MEM_WRITE":
+            local_write_count += 1
+        elif event_type == "LOCAL_MEM_READ_WRITE":
+            local_read_write_count += 1
 
         if "dst_addr" in event and "proc" in event:
             proc = event["proc"]
@@ -434,6 +450,17 @@ def test_device_api_debugger_non_dropping():
     assert (
         write_barrier_end_count == expected_barrier_count
     ), f"Expected {expected_barrier_count} WRITE_BARRIER_END events, found {write_barrier_end_count}"
+
+    # Verify local memory event counts
+    assert (
+        local_read_count == expected_local_read_count
+    ), f"Expected {expected_local_read_count} LOCAL_MEM_READ events, found {local_read_count}"
+    assert (
+        local_write_count == expected_local_write_count
+    ), f"Expected {expected_local_write_count} LOCAL_MEM_WRITE events, found {local_write_count}"
+    assert (
+        local_read_write_count == expected_local_read_write_count
+    ), f"Expected {expected_local_read_write_count} LOCAL_MEM_READ_WRITE events, found {local_read_write_count}"
 
 
 def wildcard_match(pattern, words):

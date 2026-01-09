@@ -442,8 +442,8 @@ def _run_ds_moe_op_test(
     tt_output = ds_moe_op_ttnn(tt_x, topk_experts_indices, topk_experts_weights, run_config)
     tt_output_torch = ttnn.to_torch(
         tt_output,
-        mesh_composer=ttnn.ConcatMesh2dToTensor(mesh_device, dims=(-2, 0), mesh_shape=tuple(mesh_device.shape)),
-    )[0]
+        mesh_composer=ttnn.ConcatMesh2dToTensor(mesh_device, dims=(-2, 1), mesh_shape=tuple(mesh_device.shape)),
+    ).sum(dim=1)
     if tt_output_torch.ndim == 3:
         tt_output_torch = tt_output_torch.unsqueeze(1)
 

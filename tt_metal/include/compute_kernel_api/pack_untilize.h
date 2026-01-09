@@ -36,7 +36,7 @@ namespace ckernel {
  * NOTE: This function allows the user to specify `face_r_dim` and `num_faces` through function parameters. Setting these
  * parameters results in an expensive MMIO write and cannot be avoided currently.
  * This should be addressed more systematically within the issue tt-metal#22820, since these two values can be inferred
- * from the circular buffer description, the same way as it is done in `llk_pack_hw_configure_disaggregated`. This
+ * from the circular buffer description, the same way as it is done in `llk_pack_hw_configure`. This
  * would remove the need for `llk_pack_untilize_hw_configure_disaggregated` altogether and we would pay the price
  * of the MMIO write only once, in `compute_kernel_hw_startup`.
  *
@@ -89,7 +89,7 @@ ALWI void pack_untilize_dest_init(uint32_t ocb, uint32_t face_r_dim = 16, uint32
  * NOTE: This function uses default `face_r_dim` and `num_faces` values (16 and 4, respectively). Setting these
  * parameters results in an expensive MMIO write and cannot be avoided currently.
  * This should be addressed more systematically within the issue tt-metal#22820, since these two values can be inferred
- * from the circular buffer description, the same way as it is done in `llk_pack_hw_configure_disaggregated`. This
+ * from the circular buffer description, the same way as it is done in `llk_pack_hw_configure`. This
  * would remove the need for `llk_pack_untilize_hw_configure_disaggregated` altogether and we would pay the price
  * of the MMIO write only once, in `compute_kernel_hw_startup`.
  *

@@ -129,6 +129,15 @@ def _compare_with_reference(
 ):
     passing, pcc = comp_pcc(ref_output, tt_output, expected_pcc)
     logger.info(f"PCC: {pcc}")
+    if not torch.isfinite(ref_output).all() or not torch.isfinite(tt_output).all():
+        ref_nonfinite = (~torch.isfinite(ref_output)).sum().item()
+        tt_nonfinite = (~torch.isfinite(tt_output)).sum().item()
+        logger.warning(f"Non-finite values detected: ref={ref_nonfinite}, tt={tt_nonfinite}")
+    abs_diff = torch.abs(tt_output - ref_output)
+    max_abs_diff = abs_diff.max().item() if abs_diff.numel() > 0 else 0.0
+    rel_diff = abs_diff / (torch.abs(ref_output) + 1e-12)
+    max_rel_diff = rel_diff.max().item() if rel_diff.numel() > 0 else 0.0
+    logger.info(f"Max abs diff: {max_abs_diff}, Max rel diff: {max_rel_diff}")
     assert passing, f"PCC {pcc} is below required {expected_pcc}"
     torch.testing.assert_close(tt_output, ref_output, rtol=rtol, atol=atol)
 

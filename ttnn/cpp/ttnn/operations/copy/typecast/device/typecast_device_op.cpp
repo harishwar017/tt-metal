@@ -52,12 +52,6 @@ void TypecastDeviceOperation::validate_on_program_cache_miss(
 
     if (!input_tensor.is_sharded()) {
         TT_FATAL(
-            input_tensor.layout() == Layout::TILE,
-            "Typecast operation requires tensor to be in Tile layout when working with non-sharded input tensor. Input "
-            "tensor layout: {}",
-            static_cast<int>(input_tensor.layout()));
-
-        TT_FATAL(
             input_tensor.memory_config().memory_layout() == TensorMemoryLayout::INTERLEAVED,
             "Typecast operation requires Interleaved memory layout when working with non-sharded input tensor. Input "
             "memory layout: `{}`",
@@ -80,8 +74,10 @@ void TypecastDeviceOperation::validate_on_program_cache_miss(
 
         if (!input_tensor.is_sharded()) {
             TT_FATAL(
-                (preallocated_output_tensor.value().layout() == Layout::TILE),
-                "Typecast operation requires output tensor to be in Tile layout when working with non-sharded tensor.");
+                preallocated_output_tensor.value().layout() == input_tensor.layout(),
+                "Typecast operation requires input and output layouts to match. Input layout: {}, Output layout: {}",
+                static_cast<int>(input_tensor.layout()),
+                static_cast<int>(preallocated_output_tensor.value().layout()));
         }
     }
 }
@@ -92,21 +88,18 @@ spec_return_value_t TypecastDeviceOperation::compute_output_specs(
         return tensor_args.preallocated_output->tensor_spec();
     }
 
-    auto output_layout = Layout::TILE;
-    if (args.output_memory_config.is_sharded()) {
-        output_layout = tensor_args.input.layout();
-    }
+    const Layout output_layout = tensor_args.input.layout();
 
-    const auto output_shape = tensor_args.input.logical_shape();
+    const Shape output_shape = tensor_args.input.logical_shape();
     return TensorSpec(output_shape, TensorLayout(args.output_dtype, output_layout, args.output_memory_config));
 }
 
 tensor_return_value_t TypecastDeviceOperation::create_output_tensors(
-    const operation_attributes_t& args, const tensor_args_t& tensor_args) {
+    const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
     if (tensor_args.preallocated_output.has_value()) {
         return *tensor_args.preallocated_output;
     }
-    return create_device_tensor(compute_output_specs(args, tensor_args), tensor_args.input.device());
+    return create_device_tensor(compute_output_specs(operation_attributes, tensor_args), tensor_args.input.device());
 }
 
 tt::stl::hash::hash_t TypecastDeviceOperation::compute_program_hash(
@@ -115,9 +108,27 @@ tt::stl::hash::hash_t TypecastDeviceOperation::compute_program_hash(
     const auto& input_shape = input_tensor.padded_shape();
 
     auto program_factory = select_program_factory(args, tensor_args);
-    operation::Hash hash = operation::hash_operation<TypecastDeviceOperation>(
-        args, program_factory.index(), input_tensor.dtype(), input_tensor.memory_config(), input_shape.volume());
 
+    operation::Hash hash;
+
+    // For tile layout, only volume matters. For row-major, actual shape dimensions matter.
+    if (input_tensor.layout() == Layout::TILE) {
+        hash = operation::hash_operation<TypecastDeviceOperation>(
+            args,
+            program_factory.index(),
+            input_tensor.dtype(),
+            input_tensor.memory_config(),
+            input_shape.volume(),
+            input_tensor.layout());
+    } else {
+        hash = operation::hash_operation<TypecastDeviceOperation>(
+            args,
+            program_factory.index(),
+            input_tensor.dtype(),
+            input_tensor.memory_config(),
+            input_shape,
+            input_tensor.layout());
+    }
     return hash;
 }
 

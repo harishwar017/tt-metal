@@ -8,6 +8,7 @@
 #include "internal/debug/watcher_common.h"
 #include "api/debug/waypoint.h"
 #include "api/debug/dprint.h"
+#include "internal/dataflow_buffer_init.h"
 #include "internal/debug/stack_usage.h"
 
 uint8_t noc_index;
@@ -38,6 +39,9 @@ int32_t bank_to_l1_offset[NUM_L1_BANKS] __attribute__((used));
 
 tt_l1_ptr mailboxes_t* const mailboxes = (tt_l1_ptr mailboxes_t*)(UNCACHED_MEM_MAILBOX_BASE);
 tt_l1_ptr subordinate_map_t* const subordinate_sync = (subordinate_map_t*)mailboxes->subordinate_sync.map;
+
+// move to dfb related header
+extern thread_local LocalDFBInterface g_dfb_interface[32] __attribute__((used));
 
 void device_setup() {
     // instn_buf
@@ -213,6 +217,7 @@ extern "C" uint32_t _start1() {
                 if (enables & (1u << index)) {
                     uint32_t local_cb_mask = launch_msg_address->kernel_config.local_cb_mask;
                     // TODO: setup DataFlowBuffers
+                    setup_local_dfb_interfaces(cb_l1_base, local_cb_mask);
                     // setup_local_cb_read_write_interfaces<true, true, false>(cb_l1_base, 0, local_cb_mask);
                     // cb_l1_base =
                     //     (uint32_t tt_l1_ptr*)(kernel_config_base +
@@ -319,6 +324,8 @@ extern "C" uint32_t _start1() {
         uint32_t tt_l1_ptr* cb_l1_base =
             (uint32_t tt_l1_ptr*)(kernel_config_base + launch_msg->kernel_config.local_cb_offset);
         uint32_t local_cb_mask = launch_msg->kernel_config.local_cb_mask;
+
+        setup_local_dfb_interfaces(cb_l1_base, local_cb_mask);
         // setup_local_cb_read_write_interfaces<true, true, false>(cb_l1_base, 0, local_cb_mask);
 
         // cb_l1_base = (uint32_t tt_l1_ptr*)(kernel_config_base + launch_msg->kernel_config.remote_cb_offset);

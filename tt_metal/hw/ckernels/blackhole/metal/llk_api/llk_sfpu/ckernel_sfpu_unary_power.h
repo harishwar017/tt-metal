@@ -114,15 +114,9 @@ sfpi_inline sfpi::vFloat _sfpu_unary_power_21f_(sfpi::vFloat base, sfpi::vFloat 
 
     sfpi::vFloat y = sfpi::reinterpret<sfpi::vFloat>(zii);
 
-    // Post-processing: ensure that special values (e.g. 0**0, -1**0.5, ...) are handled correctly
-    // Check valid base range
-    sfpi::vInt pow_int =
-        sfpi::float_to_int16(pow, 0);  // int16 should be plenty, since large powers will approach 0/Inf
-    sfpi::vFloat pow_rounded = sfpi::int32_to_float(pow_int, 0);
-
     // Division by 0 when base is 0 and pow is negative => set to NaN (only for negative exponents)
     if constexpr (!IS_POSITIVE_EXPONENT) {
-        v_if((abs_base == 0.f) && pow < 0.f) {
+        v_if(abs_base == 0.f) {
             y = sfpi::vConstFloatPrgm2;  // negative powers of 0 are NaN, e.g. pow(0, -1.5)
         }
         v_endif;
@@ -130,6 +124,12 @@ sfpi_inline sfpi::vFloat _sfpu_unary_power_21f_(sfpi::vFloat base, sfpi::vFloat 
 
     // Negative base handling (for both positive and negative exponents)
     v_if(base < 0.0f) {
+        // Post-processing: ensure that special values (e.g. 0**0, -1**0.5, ...) are handled correctly
+        // Check valid base range
+        sfpi::vInt pow_int =
+            sfpi::float_to_int16(pow, 0);  // int16 should be plenty, since large powers will approach 0/Inf
+        sfpi::vFloat pow_rounded = sfpi::int32_to_float(pow_int, 0);
+
         // If pow is odd integer then result is negative
         // If power is even, then result is positive
         // To get the sign bit of result, we can shift last bit of pow_int to the 1st bit
@@ -160,7 +160,7 @@ inline void _power_iterative_(const uint32_t exponent) {
     const uint exp = (uint)exp_float;
 #pragma GCC unroll 8
     for (int d = 0; d < ITERATIONS; d++) {
-        vFloat in = dst_reg[0];
+        vFloat in = sfpi::dst_reg[0];
         vFloat result = 1.0f;
         uint e = exp;
         while (e > 0) {
@@ -170,8 +170,8 @@ inline void _power_iterative_(const uint32_t exponent) {
             in *= in;
             e >>= 1;
         }
-        dst_reg[0] = result;
-        dst_reg++;
+        sfpi::dst_reg[0] = result;
+        sfpi::dst_reg++;
     }
 }
 

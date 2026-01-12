@@ -163,7 +163,7 @@ std::pair<std::string, std::string> get_op_init_and_func_parameterized(
             if (legacy_compat) {
                 return {"power_tile_init<true>();", fmt::format("power_tile<true>({}, {:#x}u);", idst, exponent)};
             }
-            return {"power_tile_init<>();", fmt::format("power_tile<>({}, {:#x}u);", idst, exponent)};
+            return {"power_tile_init();", fmt::format("power_tile({}, {:#x}u);", idst, exponent)};
         }
         case UnaryOpType::LEAKY_RELU:
             return {

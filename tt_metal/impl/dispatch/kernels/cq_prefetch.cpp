@@ -311,12 +311,14 @@ FORCE_INLINE uint32_t read_from_pcie(
     // Wrap cmddat_q
     if (fence + size + preamble_size > cmddat_q_end) {
         // only wrap if there are no commands ready, otherwise we'll leave some on the floor
+        /*
         // TODO: does this matter for perf?
         if (cmd_ptr != fence) {
             // No pending reads, since the location of fence cannot be moved due to unread commands
             // in the cmddat_q -> reads cannot be issued to fill the queue.
             return pending_read_size;
         }
+        */
         fence = cmddat_q_base;
     }
 

@@ -310,15 +310,23 @@ FORCE_INLINE uint32_t read_from_pcie(
     uint32_t pending_read_size = 0;
     // Wrap cmddat_q
     if (fence + size + preamble_size > cmddat_q_end) {
-        // only wrap if there are no commands ready, otherwise we'll leave some on the floor
-        /*
-        // TODO: does this matter for perf?
-        if (cmd_ptr != fence) {
-            // No pending reads, since the location of fence cannot be moved due to unread commands
-            // in the cmddat_q -> reads cannot be issued to fill the queue.
+        // Check if we can safely wrap without overwriting unprocessed commands
+        // After wrapping, we'll write from cmddat_q_base to cmddat_q_base + size + preamble_size
+        // We can wrap if cmd_ptr has advanced enough that it won't be overwritten
+        const uint32_t needed_space = size + preamble_size;
+        const uint32_t new_fence_end = cmddat_q_base + needed_space;
+
+        // We can wrap if the new write region (cmddat_q_base to new_fence_end) doesn't overlap
+        // with unprocessed commands. Since cmd_ptr is the read pointer, we need:
+        // - If cmd_ptr >= fence (normal case): unprocessed data is from fence to cmd_ptr,
+        //   so we can wrap if new_fence_end <= cmd_ptr
+        // - If cmd_ptr < fence (already wrapped): unprocessed data wraps around,
+        //   so we can wrap if new_fence_end <= cmd_ptr
+        // In both cases, the condition is: new_fence_end <= cmd_ptr
+        if (new_fence_end > cmd_ptr) {
+            // Not enough space after wrap, cannot proceed without overwriting unprocessed commands
             return pending_read_size;
         }
-        */
         fence = cmddat_q_base;
     }
 
@@ -2043,7 +2051,7 @@ void kernel_main_hd() {
     while (!done) {
         DeviceZoneScopedN("CQ-PREFETCH");
         constexpr uint32_t preamble_size = 0;
-        fetch_q_get_cmds<preamble_size>(fence, cmd_ptr, pcie_read_ptr);
+        <preamble_size>(fence, cmd_ptr, pcie_read_ptr);
 
         IDLE_ERISC_HEARTBEAT_AND_RETURN(heartbeat);
 

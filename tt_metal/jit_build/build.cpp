@@ -260,18 +260,18 @@ void JitBuildEnv::init(
     }
 
     // Includes
-    // TODO(pgk) this list is insane
+    // Note: "." and ".." are relative to the compile directory (see compile_one()).
+    // ".." is required because generated headers (e.g., kernel_includes.hpp from genfiles.cpp)
+    // are placed in the parent of the per-target compile directory.
     std::vector<std::string> includeDirs = {
         ".",
         "..",
         root_,
-        root_ + "ttnn",
         root_ + "ttnn/cpp",
         root_ + "tt_metal",
         root_ + "tt_metal/include",
         root_ + "tt_metal/hw/inc",
         root_ + "tt_metal/hostdevcommon/api",
-        root_ + "tt_metal/hw/inc/debug",
         root_ + "tt_metal/api/"};
 
     std::ostringstream oss;

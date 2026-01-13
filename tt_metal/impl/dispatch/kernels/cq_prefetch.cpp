@@ -316,14 +316,17 @@ FORCE_INLINE uint32_t read_from_pcie(
         const uint32_t needed_space = size + preamble_size;
         const uint32_t new_fence_end = cmddat_q_base + needed_space;
 
-        // We can wrap if the new write region (cmddat_q_base to new_fence_end) doesn't overlap
-        // with unprocessed commands. Since cmd_ptr is the read pointer, we need:
-        // - If cmd_ptr >= fence (normal case): unprocessed data is from fence to cmd_ptr,
-        //   so we can wrap if new_fence_end <= cmd_ptr
-        // - If cmd_ptr < fence (already wrapped): unprocessed data wraps around,
-        //   so we can wrap if new_fence_end <= cmd_ptr
-        // In both cases, the condition is: new_fence_end <= cmd_ptr
-        if (new_fence_end > cmd_ptr) {
+        // We can wrap if the new write region [cmddat_q_base, new_fence_end) doesn't overlap
+        // with unprocessed commands. Here:
+        //   - cmd_ptr is the read pointer (oldest unprocessed command)
+        //   - fence is the write pointer (one past the newest written command)
+        // In the common (non-wrapped) case cmd_ptr <= fence, unprocessed commands occupy
+        //   [cmd_ptr, fence). In the wrapped case cmd_ptr > fence, unprocessed commands occupy
+        //   [cmd_ptr, cmddat_q_end) union [cmddat_q_base, fence).
+        // After wrapping, we would write into [cmddat_q_base, new_fence_end), so this must be
+        // entirely before cmd_ptr in order not to overwrite unprocessed commands. Therefore,
+        // in both cases the safety condition is: new_fence_end <= cmd_ptr.
+        if ((cmd_ptr != fence) && (new_fence_end > cmd_ptr)) {
             // Not enough space after wrap, cannot proceed without overwriting unprocessed commands
             return pending_read_size;
         }

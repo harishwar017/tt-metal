@@ -326,7 +326,7 @@ FORCE_INLINE uint32_t read_from_pcie(
         // After wrapping, we would write into [cmddat_q_base, new_fence_end), so this must be
         // entirely before cmd_ptr in order not to overwrite unprocessed commands. Therefore,
         // in both cases the safety condition is: new_fence_end <= cmd_ptr.
-        if ((cmd_ptr != fence) && (new_fence_end > cmd_ptr)) {
+        if ((cmd_ptr != fence) && (new_fence_end >= cmd_ptr)) {
             // Not enough space after wrap, cannot proceed without overwriting unprocessed commands
             return pending_read_size;
         }

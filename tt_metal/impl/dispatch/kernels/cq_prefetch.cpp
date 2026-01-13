@@ -2051,7 +2051,7 @@ void kernel_main_hd() {
     while (!done) {
         DeviceZoneScopedN("CQ-PREFETCH");
         constexpr uint32_t preamble_size = 0;
-        <preamble_size>(fence, cmd_ptr, pcie_read_ptr);
+        fetch_q_get_cmds<preamble_size>(fence, cmd_ptr, pcie_read_ptr);
 
         IDLE_ERISC_HEARTBEAT_AND_RETURN(heartbeat);
 

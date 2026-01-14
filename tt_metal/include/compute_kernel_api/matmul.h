@@ -58,18 +58,17 @@ ALWI void matmul_block_math_dynamic_throttle(
     volatile uint32_t mm_throttle_en = *(throttle_ptr) % 2;
     if (mm_throttle_en) {
         if (throttled_mop_status != 1) {
-            MATH((llk_math_matmul_init<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE_MAX>(
-                in0_cb_id, in1_cb_id, transpose, ct_dim, rt_dim)));
+            MATH((
+                llk_math_matmul_init<MATH_FIDELITY, MM_THROTTLE_MAX>(in0_cb_id, in1_cb_id, transpose, ct_dim, rt_dim)));
             throttled_mop_status = 1;
         }
-        MATH((llk_math_matmul<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE_MAX>(idst, ct_dim, rt_dim)));
+        MATH((llk_math_matmul<MATH_FIDELITY, MM_THROTTLE_MAX>(idst, ct_dim, rt_dim)));
     } else {
         if (throttled_mop_status != 0) {
-            MATH((llk_math_matmul_init<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE>(
-                in0_cb_id, in1_cb_id, transpose, ct_dim, rt_dim)));
+            MATH((llk_math_matmul_init<MATH_FIDELITY, MM_THROTTLE>(in0_cb_id, in1_cb_id, transpose, ct_dim, rt_dim)));
             throttled_mop_status = 0;
         }
-        MATH((llk_math_matmul<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE>(idst, ct_dim, rt_dim)));
+        MATH((llk_math_matmul<MATH_FIDELITY, MM_THROTTLE>(idst, ct_dim, rt_dim)));
     }
 }
 #endif
@@ -95,8 +94,7 @@ ALWI void mm_init(uint32_t in0_cb_id, uint32_t in1_cb_id, uint32_t out_cb_id, co
     UNPACK((llk_unpack_hw_configure<DST_ACCUM_MODE>(in1_cb_id, in0_cb_id)));
     UNPACK((llk_unpack_AB_matmul_init(in0_cb_id, in1_cb_id, transpose)));
 
-    MATH(
-        (llk_math_matmul_init<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE>(in0_cb_id, in1_cb_id, transpose)));
+    MATH((llk_math_matmul_init<MATH_FIDELITY, MM_THROTTLE>(in0_cb_id, in1_cb_id, transpose)));
     MATH((llk_math_pack_sync_init<DST_ACCUM_MODE>()));
     MATH((llk_math_hw_configure(in0_cb_id, in1_cb_id)));
 
@@ -126,7 +124,7 @@ ALWI void mm_init(uint32_t in0_cb_id, uint32_t in1_cb_id, uint32_t out_cb_id, co
 ALWI void matmul_tiles(
     uint32_t in0_cb_id, uint32_t in1_cb_id, uint32_t in0_tile_index, uint32_t in1_tile_index, uint32_t idst) {
     UNPACK((llk_unpack_AB_matmul(in0_cb_id, in1_cb_id, in0_tile_index, in1_tile_index)));
-    MATH((llk_math_matmul<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE>(idst)));
+    MATH((llk_math_matmul<MATH_FIDELITY, MM_THROTTLE>(idst)));
 }
 
 // clang-format off
@@ -145,7 +143,7 @@ ALWI void matmul_tiles(
  // clang-format on
 template <uint32_t num_faces = 4>
 ALWI void matmul_tiles_math(uint32_t idst) {
-    MATH((llk_math_matmul<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE, num_faces>(idst)));
+    MATH((llk_math_matmul<MATH_FIDELITY, MM_THROTTLE, num_faces>(idst)));
 }
 
 // clang-format off
@@ -163,8 +161,7 @@ ALWI void matmul_tiles_math(uint32_t idst) {
  */
 // clang-format on
 ALWI void mm_init_short(uint32_t in0_cb_id, uint32_t in1_cb_id, const uint32_t transpose = 0) {
-    MATH(
-        (llk_math_matmul_init<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE>(in0_cb_id, in1_cb_id, transpose)));
+    MATH((llk_math_matmul_init<MATH_FIDELITY, MM_THROTTLE>(in0_cb_id, in1_cb_id, transpose)));
     UNPACK((llk_unpack_AB_matmul_init(in0_cb_id, in1_cb_id, transpose)));
 }
 
@@ -218,8 +215,7 @@ ALWI void mm_block_init(
     UNPACK((llk_unpack_hw_configure<DST_ACCUM_MODE>(in1_cb_id, in0_cb_id)));
     UNPACK((llk_unpack_AB_matmul_init(in0_cb_id, in1_cb_id, transpose, ct_dim, rt_dim, kt_dim)));
 
-    MATH((llk_math_matmul_init<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE>(
-        in0_cb_id, in1_cb_id, transpose, ct_dim, rt_dim)));
+    MATH((llk_math_matmul_init<MATH_FIDELITY, MM_THROTTLE>(in0_cb_id, in1_cb_id, transpose, ct_dim, rt_dim)));
     MATH((llk_math_pack_sync_init<DST_ACCUM_MODE>()));
     MATH((llk_math_hw_configure(in0_cb_id, in1_cb_id)));
 #ifdef ARCH_BLACKHOLE
@@ -269,7 +265,7 @@ ALWI void matmul_block(
     // Dynamic throttling is only available on Blackhole architecture
     MATH((matmul_block_math_dynamic_throttle(in0_cb_id, in1_cb_id, idst, transpose, ct_dim, rt_dim)));
 #else
-    MATH((llk_math_matmul<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE>(idst, ct_dim, rt_dim)));
+    MATH((llk_math_matmul<MATH_FIDELITY, MM_THROTTLE>(idst, ct_dim, rt_dim)));
 #endif
 }
 
@@ -298,8 +294,7 @@ ALWI void mm_block_init_short(
     uint32_t rt_dim = 1,
     uint32_t kt_dim = 1) {
     UNPACK((llk_unpack_AB_matmul_init(in0_cb_id, in1_cb_id, transpose, ct_dim, rt_dim, kt_dim)));
-    MATH((llk_math_matmul_init<static_cast<MathFidelity>(MATH_FIDELITY), MM_THROTTLE>(
-        in0_cb_id, in1_cb_id, transpose, ct_dim, rt_dim)));
+    MATH((llk_math_matmul_init<MATH_FIDELITY, MM_THROTTLE>(in0_cb_id, in1_cb_id, transpose, ct_dim, rt_dim)));
 #ifdef ARCH_BLACKHOLE
     // Dynamic throttling is only available on Blackhole architecture
     MATH((throttled_mop_status = 0));

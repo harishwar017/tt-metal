@@ -388,7 +388,19 @@ void generate_math_fidelity_descriptor(JitBuildOptions& options) {
     ofstream file_stream;
 
     file_stream.open(math_fidelity_descriptor);
-    file_stream << "constexpr std::int32_t MATH_FIDELITY = " << (int)desc.get_hlk_math_fidelity() << ";" << endl;
+
+    // Map MathFidelity enum value to ckernel::MathFidelity enum
+    MathFidelity fidelity = desc.get_hlk_math_fidelity();
+    string enum_value;
+    switch (fidelity) {
+        case MathFidelity::LoFi: enum_value = "ckernel::MathFidelity::LoFi"; break;
+        case MathFidelity::HiFi2: enum_value = "ckernel::MathFidelity::HiFi2"; break;
+        case MathFidelity::HiFi3: enum_value = "ckernel::MathFidelity::HiFi3"; break;
+        case MathFidelity::HiFi4:
+        default: enum_value = "ckernel::MathFidelity::HiFi4"; break;
+    }
+
+    file_stream << "constexpr ckernel::MathFidelity MATH_FIDELITY = " << enum_value << ";" << endl;
     file_stream.close();
 }
 

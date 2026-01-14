@@ -48,12 +48,7 @@ namespace ckernel {
 template <PoolType reduce_type = REDUCE_OP, ReduceDim reduce_dim = REDUCE_DIM, bool enforce_fp32_accumulation = false>
 ALWI void reduce_init(uint32_t icb, uint32_t icb_scaler, uint32_t ocb) {
     UNPACK((llk_unpack_AB_reduce_init<reduce_dim, BroadcastType::NONE, enforce_fp32_accumulation>(icb, icb_scaler)));
-    MATH((llk_math_reduce_init<
-          reduce_type,
-          reduce_dim,
-          DST_ACCUM_MODE,
-          static_cast<MathFidelity>(MATH_FIDELITY),
-          enforce_fp32_accumulation>()));
+    MATH((llk_math_reduce_init<reduce_type, reduce_dim, DST_ACCUM_MODE, MATH_FIDELITY, enforce_fp32_accumulation>()));
     PACK((llk_pack_reduce_mask_config<false /*untilize*/, reduce_dim>()));
 }
 
@@ -118,13 +113,8 @@ ALWI void reduce_uninit() {
 // clang-format on
 template <PoolType reduce_type = REDUCE_OP, ReduceDim reduce_dim = REDUCE_DIM, bool enforce_fp32_accumulation = false>
 ALWI void reduce_tile(uint32_t icb, uint32_t icb_scaler, uint32_t itile, uint32_t itile_scaler, uint32_t idst) {
-    MATH((llk_math_reduce<
-          reduce_type,
-          reduce_dim,
-          DST_ACCUM_MODE,
-          static_cast<MathFidelity>(MATH_FIDELITY),
-          false,
-          enforce_fp32_accumulation>(icb, icb_scaler, idst)));
+    MATH((llk_math_reduce<reduce_type, reduce_dim, DST_ACCUM_MODE, MATH_FIDELITY, false, enforce_fp32_accumulation>(
+        icb, icb_scaler, idst)));
     UNPACK((llk_unpack_AB(icb, icb_scaler, itile, itile_scaler)));
 }
 
@@ -143,12 +133,7 @@ ALWI void reduce_tile(uint32_t icb, uint32_t icb_scaler, uint32_t itile, uint32_
 // clang-format on
 template <PoolType reduce_type = REDUCE_OP, ReduceDim reduce_dim = REDUCE_DIM, bool enforce_fp32_accumulation = false>
 ALWI void reduce_tile_math(uint32_t idst, uint32_t num_faces = 4) {
-    MATH((llk_math_reduce<
-          reduce_type,
-          reduce_dim,
-          DST_ACCUM_MODE,
-          static_cast<MathFidelity>(MATH_FIDELITY),
-          false,
-          enforce_fp32_accumulation>(idst, num_faces)));
+    MATH((llk_math_reduce<reduce_type, reduce_dim, DST_ACCUM_MODE, MATH_FIDELITY, false, enforce_fp32_accumulation>(
+        idst, num_faces)));
 }
 }  // namespace ckernel

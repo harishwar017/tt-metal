@@ -54,25 +54,20 @@ void MAIN {
     constexpr uint32_t down_left_wrap_inc_cb_id = get_compile_time_arg_val(15);
     constexpr uint32_t up_left_wrap_inc_cb_id = get_compile_time_arg_val(16);
     constexpr uint32_t out_cb_id = get_compile_time_arg_val(17);
-    // Compile-time arg 18 (out_idx_cb_id) is only used by MPWI kernel
     constexpr bool one_scalar_per_core = get_compile_time_arg_val(19);
     constexpr uint32_t pre_tilize_cb_id = get_compile_time_arg_val(20);
     constexpr bool is_output_tiled = get_compile_time_arg_val(21);  // 1 = TILED, 0 = ROW_MAJOR
     constexpr bool is_output_block_format = (bool)get_compile_time_arg_val(22);
-    // Normal pooling does not return indices - compile-time arg 23 exists but is always false for this kernel
-    constexpr uint32_t stride_h = get_compile_time_arg_val(24);
-    constexpr uint32_t stride_w = get_compile_time_arg_val(25);
-    constexpr uint32_t in_h_padded = get_compile_time_arg_val(26);
-    constexpr uint32_t in_w_padded = get_compile_time_arg_val(27);
-    constexpr uint32_t eff_kernel_h = get_compile_time_arg_val(28);
-    constexpr uint32_t eff_kernel_w = get_compile_time_arg_val(29);
-    constexpr uint32_t pad_l = get_compile_time_arg_val(30);
+    constexpr uint32_t stride_h = get_compile_time_arg_val(23);
+    constexpr uint32_t stride_w = get_compile_time_arg_val(24);
+    constexpr uint32_t in_h_padded = get_compile_time_arg_val(25);
+    constexpr uint32_t in_w_padded = get_compile_time_arg_val(26);
+    constexpr uint32_t eff_kernel_h = get_compile_time_arg_val(27);
+    constexpr uint32_t eff_kernel_w = get_compile_time_arg_val(28);
+    constexpr uint32_t pad_l = get_compile_time_arg_val(29);
+    constexpr uint32_t clear_value_cb_id = get_compile_time_arg_val(33);
 
     constexpr bool use_split_reader = split_reader;
-
-    constexpr uint32_t mpwi_cb_tile_idx = 0;
-    constexpr uint32_t data_dst_idx = 0;
-    // DST indices 2, 4, 6 (index tracking) are only used by MPWI kernel
 
     constexpr uint32_t face_r_dim = window_size_hw < FACE_HEIGHT ? window_size_hw : FACE_HEIGHT;
     constexpr bool last_tile_is_partial = in_c % TILE_WIDTH != 0;

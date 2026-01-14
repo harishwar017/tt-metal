@@ -294,18 +294,15 @@ void kernel_main() {
     constexpr uint32_t stride_w = get_compile_time_arg_val(34);
     constexpr uint32_t dilation_h = get_compile_time_arg_val(35);
     constexpr uint32_t dilation_w = get_compile_time_arg_val(36);
-    // Normal pooling does not return indices - compile-time arg 37 exists but is always false for this kernel
-    constexpr uint32_t pad_t = get_compile_time_arg_val(38);
-    constexpr uint32_t pad_l = get_compile_time_arg_val(39);
-    // Compile-time args 40-42 (increment values) are only used by MPWI kernel
-    constexpr bool zero_pages = (bool)get_compile_time_arg_val(43);
-    // Compile-time args 44-45 (out_idx_cb_id) are only used by MPWI kernel
-    constexpr uint32_t config_in_dram = get_compile_time_arg_val(51);
-    constexpr uint32_t config_dram_addr = get_compile_time_arg_val(52);
-    constexpr uint32_t config_page_size = get_compile_time_arg_val(53);
-    constexpr uint32_t reader_dram_addr = get_compile_time_arg_val(54);
-    constexpr uint32_t reader_page_size = get_compile_time_arg_val(55);
-    constexpr uint32_t reader_tensor_args_index = 56;
+    constexpr uint32_t pad_t = get_compile_time_arg_val(37);
+    constexpr uint32_t pad_l = get_compile_time_arg_val(38);
+    constexpr bool zero_pages = (bool)get_compile_time_arg_val(39);
+    constexpr uint32_t config_in_dram = get_compile_time_arg_val(50);
+    constexpr uint32_t config_dram_addr = get_compile_time_arg_val(51);
+    constexpr uint32_t config_page_size = get_compile_time_arg_val(52);
+    constexpr uint32_t reader_dram_addr = get_compile_time_arg_val(53);
+    constexpr uint32_t reader_page_size = get_compile_time_arg_val(54);
+    constexpr uint32_t reader_tensor_args_index = 55;
 
     constexpr bool use_split_reader = split_reader;
     constexpr uint32_t eff_kernel_w = (kernel_w - 1) * dilation_w + 1;

@@ -61,21 +61,20 @@ void MAIN {
     constexpr uint32_t pre_tilize_cb_id = get_compile_time_arg_val(20);
     constexpr bool is_output_tiled = get_compile_time_arg_val(21);  // 1 = TILED, 0 = ROW_MAJOR
     constexpr bool is_output_block_format = (bool)get_compile_time_arg_val(22);
-    // MPWI always returns indices - compile-time arg 23 exists but is always true for this kernel
-    constexpr uint32_t stride_h = get_compile_time_arg_val(24);
-    constexpr uint32_t stride_w = get_compile_time_arg_val(25);
-    constexpr uint32_t in_h_padded = get_compile_time_arg_val(26);
-    constexpr uint32_t in_w_padded = get_compile_time_arg_val(27);
-    constexpr uint32_t eff_kernel_h = get_compile_time_arg_val(28);
-    constexpr uint32_t eff_kernel_w = get_compile_time_arg_val(29);
-    constexpr uint32_t pad_l = get_compile_time_arg_val(30);
-    constexpr uint32_t intra_kernel_right_inc_cb_id = get_compile_time_arg_val(31);
-    constexpr uint32_t intra_kernel_down_left_wrap_inc_cb_id = get_compile_time_arg_val(32);
-    constexpr uint32_t compute_tmp_idx_cb_id = get_compile_time_arg_val(33);
+    constexpr uint32_t stride_h = get_compile_time_arg_val(23);
+    constexpr uint32_t stride_w = get_compile_time_arg_val(24);
+    constexpr uint32_t in_h_padded = get_compile_time_arg_val(25);
+    constexpr uint32_t in_w_padded = get_compile_time_arg_val(26);
+    constexpr uint32_t eff_kernel_h = get_compile_time_arg_val(27);
+    constexpr uint32_t eff_kernel_w = get_compile_time_arg_val(28);
+    constexpr uint32_t pad_l = get_compile_time_arg_val(29);
+    constexpr uint32_t intra_kernel_right_inc_cb_id = get_compile_time_arg_val(30);
+    constexpr uint32_t intra_kernel_down_left_wrap_inc_cb_id = get_compile_time_arg_val(31);
+    constexpr uint32_t compute_tmp_idx_cb_id = get_compile_time_arg_val(32);
+    constexpr uint32_t clear_value_cb_id = get_compile_time_arg_val(33);
     constexpr uint32_t kernel_h = get_compile_time_arg_val(34);
     constexpr uint32_t kernel_w = get_compile_time_arg_val(35);
-    constexpr uint32_t clear_value_cb_id = get_compile_time_arg_val(36);
-    constexpr uint32_t indexes_32_bit = get_compile_time_arg_val(37);
+    constexpr uint32_t indexes_32_bit = get_compile_time_arg_val(36);
 
     constexpr DataFormat copy_format = indexes_32_bit ? DataFormat::UInt32 : DataFormat::UInt16;
 

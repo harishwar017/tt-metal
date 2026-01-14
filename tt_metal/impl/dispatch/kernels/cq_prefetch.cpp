@@ -310,26 +310,37 @@ FORCE_INLINE uint32_t read_from_pcie(
     uint32_t pending_read_size = 0;
     // Wrap cmddat_q
     if (fence + size + preamble_size > cmddat_q_end) {
-        // Check if we can safely wrap without overwriting unprocessed commands
-        // After wrapping, we'll write from cmddat_q_base to cmddat_q_base + size + preamble_size
-        // We can wrap if cmd_ptr has advanced enough that it won't be overwritten
         const uint32_t needed_space = size + preamble_size;
-        const uint32_t new_fence_end = cmddat_q_base + needed_space;
+        const uint32_t write_end = cmddat_q_base + needed_space;
 
-        // We can wrap if the new write region [cmddat_q_base, new_fence_end) doesn't overlap
-        // with unprocessed commands. Here:
-        //   - cmd_ptr is the read pointer (oldest unprocessed command)
-        //   - fence is the write pointer (one past the newest written command)
-        // In the common (non-wrapped) case cmd_ptr <= fence, unprocessed commands occupy
-        //   [cmd_ptr, fence). In the wrapped case cmd_ptr > fence, unprocessed commands occupy
-        //   [cmd_ptr, cmddat_q_end) union [cmddat_q_base, fence).
-        // After wrapping, we would write into [cmddat_q_base, new_fence_end), so this must be
-        // entirely before cmd_ptr in order not to overwrite unprocessed commands. Therefore,
-        // in both cases the safety condition is: new_fence_end <= cmd_ptr.
-        if ((cmd_ptr != fence) && (new_fence_end >= cmd_ptr)) {
-            // Not enough space after wrap, cannot proceed without overwriting unprocessed commands
-            return pending_read_size;
+        // Critical: unprocessed commands are in [cmd_ptr, fence) where fence is the CURRENT value
+        // (before wrapping). After wrapping, fence will become cmddat_q_base, but unprocessed
+        // commands remain at their original locations [cmd_ptr, old_fence).
+        //
+        // The write region after wrapping will be [cmddat_q_base + preamble_size, write_end).
+        // For safety, we need to ensure this region doesn't overlap with unprocessed commands.
+        //
+        // Since unprocessed commands are in [cmd_ptr, fence) and fence is near cmddat_q_end,
+        // and we're writing at the beginning [cmddat_q_base + preamble_size, write_end),
+        // we need write_end <= cmd_ptr to ensure no overlap.
+        if (cmd_ptr != fence) {
+            // There are unprocessed commands in [cmd_ptr, fence)
+            // Safety check: ensure cmd_ptr is in valid range [cmddat_q_base, cmddat_q_end)
+            if (cmd_ptr < cmddat_q_base || cmd_ptr >= cmddat_q_end) {
+                // Invalid cmd_ptr, be conservative and don't wrap
+                return pending_read_size;
+            }
+            // The write region [cmddat_q_base + preamble_size, write_end) must not overlap
+            // with unprocessed commands [cmd_ptr, fence). Since we're writing at the base
+            // and unprocessed commands are at [cmd_ptr, fence) where fence is near cmddat_q_end,
+            // we need write_end < cmd_ptr (strict inequality) to ensure the write region is
+            // entirely before cmd_ptr and doesn't touch the command at cmd_ptr.
+            if (write_end >= cmd_ptr) {
+                // Would overwrite unprocessed commands - not enough space from base to cmd_ptr
+                return pending_read_size;
+            }
         }
+        // If cmd_ptr == fence, there are no unprocessed commands, so wrapping is always safe
         fence = cmddat_q_base;
     }
 

@@ -68,6 +68,19 @@ ALWI void clear_out_tiles() {
     noc_async_read_barrier();
 }
 
+template <uint32_t config_dram_addr, uint32_t config_page_size, uint32_t tensor_args_index, uint32_t cb_reader_index>
+void load_config_tensor_if_in_dram(uint32_t core_index) {
+    // TODO: Instead of all cores reading from dram, only the first column reads, and does an MCAST to all the other
+    // cores in the row.
+    constexpr auto config_tensor_args = TensorAccessorArgs<tensor_args_index>();
+    const auto config_accessor = TensorAccessor(config_tensor_args, config_dram_addr, config_page_size);
+    uint64_t src_noc_addr = get_noc_addr(core_index, config_accessor);
+
+    noc_async_read(src_noc_addr, get_write_ptr(cb_reader_index), config_page_size);
+    noc_async_read_barrier();
+    cb_push_back(cb_reader_index, 1);
+}
+
 // Initialize indices and increment tiles for return_indices functionality
 template <
     uint32_t kernel_h,
@@ -106,8 +119,8 @@ ALWI void initialize_return_indices_data() {
     // Calculate initial index based on padding conditions
     uint16_t init_index = 0;
     constexpr uint32_t eff_kernel_w = (kernel_w - 1) * dilation_w + 1;
-    const uint16_t start_row = (uint16_t)get_arg_val<uint32_t>(1);
-    const uint16_t start_col = (uint16_t)get_arg_val<uint32_t>(2);
+    const uint16_t start_row = (uint16_t)get_arg_val<uint32_t>(2);
+    const uint16_t start_col = (uint16_t)get_arg_val<uint32_t>(3);
 
     if (start_row <= pad_t) {
         // top left is in top padding, we increment from the padding index in the top left
@@ -400,6 +413,12 @@ void kernel_main() {
     constexpr uint32_t intra_kernel_down_left_wrap_inc = get_compile_time_arg_val(47);
     constexpr uint32_t intra_kernel_right_inc_cb_id = get_compile_time_arg_val(48);
     constexpr uint32_t intra_kernel_down_left_wrap_inc_cb_id = get_compile_time_arg_val(49);
+    constexpr uint32_t config_in_dram = get_compile_time_arg_val(50);
+    constexpr uint32_t config_dram_addr = get_compile_time_arg_val(51);
+    constexpr uint32_t config_page_size = get_compile_time_arg_val(52);
+    constexpr uint32_t reader_dram_addr = get_compile_time_arg_val(53);
+    constexpr uint32_t reader_page_size = get_compile_time_arg_val(54);
+    constexpr uint32_t reader_tensor_args_index = 55;
 
     constexpr uint32_t eff_kernel_w = (kernel_w - 1) * dilation_w + 1;
 
@@ -460,8 +479,21 @@ void kernel_main() {
         fill_with_val(get_write_ptr(in_scalar_cb_id_0), FACE_WIDTH, bf16_scalar >> 16);
         cb_push_back(in_scalar_cb_id_0, 1);
     }
+    const uint32_t core_nhw_index = get_arg_val<uint32_t>(1);
 
     const uint32_t in_l1_read_base_addr = get_read_ptr(in_shard_cb_id);
+    if constexpr (config_in_dram) {
+        if (reader_id == 0) {
+            load_config_tensor_if_in_dram<
+                reader_dram_addr,
+                reader_page_size,
+                reader_tensor_args_index,
+                in_reader_indices_cb_id>(core_nhw_index);
+
+        } else {
+            cb_wait_front(in_reader_indices_cb_id, 1);
+        }
+    }
     uint32_t reader_indices_l1_addr = get_read_ptr(in_reader_indices_cb_id);
     volatile tt_l1_ptr uint32_t* reader_indices_ptr =
         reinterpret_cast<volatile tt_l1_ptr uint32_t*>(reader_indices_l1_addr);

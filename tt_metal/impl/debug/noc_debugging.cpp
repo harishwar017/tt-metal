@@ -19,8 +19,9 @@ std::string format_core_info(tt_cxy_pair core, int processor_id) {
 
 inline bool wrap_ge(uint32_t a, uint32_t b) {
     // wrapping comparison from RFC 1982
+    // same number of bits from LocalNocEventDstTrailer
     constexpr uint32_t COUNTER_WIDTH = 12;
-    constexpr uint32_t shift = 32 - COUNTER_WIDTH;  // 20 bits
+    constexpr uint32_t shift = 32 - COUNTER_WIDTH;
     int32_t diff = static_cast<int32_t>(a - b);
     return (diff << shift) >= 0;
 }
@@ -29,14 +30,12 @@ inline bool wrap_ge(uint32_t a, uint32_t b) {
 
 namespace tt::tt_metal {
 
-NOCDebugState::CoreDebugState& NOCDebugState::get_state(tt_cxy_pair core, int /*processor_id*/) { return cores[core]; }
+NOCDebugState::CoreDebugState& NOCDebugState::get_state(tt_cxy_pair core) { return cores[core]; }
 
-const NOCDebugState::CoreDebugState& NOCDebugState::get_state(tt_cxy_pair core, int /*processor_id*/) const {
-    return cores[core];
-}
+const NOCDebugState::CoreDebugState& NOCDebugState::get_state(tt_cxy_pair core) const { return cores[core]; }
 
 void NOCDebugState::handle_write_event(tt_cxy_pair core, int processor_id, uint64_t timestamp, NocWriteEvent event) {
-    CoreDebugState& state = get_state(core, processor_id);
+    CoreDebugState& state = get_state(core);
     uint8_t noc_id = event.noc;
     uint32_t src_addr = event.src_addr;
     bool posted = event.posted;
@@ -91,7 +90,7 @@ void NOCDebugState::handle_write_event(tt_cxy_pair core, int processor_id, uint6
 }
 
 void NOCDebugState::handle_read_event(tt_cxy_pair core, int processor_id, uint64_t timestamp, NocReadEvent event) {
-    CoreDebugState& state = get_state(core, processor_id);
+    CoreDebugState& state = get_state(core);
     uint8_t noc_id = event.noc;
     uint32_t dst_addr = event.dst_addr;
     std::string problem_type;
@@ -128,7 +127,7 @@ void NOCDebugState::handle_read_event(tt_cxy_pair core, int processor_id, uint64
 
 void NOCDebugState::handle_read_barrier_event(
     tt_cxy_pair core, int processor_id, uint64_t timestamp, NocReadBarrierEvent event) {
-    CoreDebugState& state = get_state(core, processor_id);
+    CoreDebugState& state = get_state(core);
     uint8_t noc_id = event.noc;
     update_latest_risc_timestamp(core, processor_id, timestamp);
 
@@ -137,7 +136,7 @@ void NOCDebugState::handle_read_barrier_event(
 
 void NOCDebugState::handle_write_barrier_event(
     tt_cxy_pair core, int processor_id, uint64_t timestamp, NocWriteBarrierEvent event) {
-    CoreDebugState& state = get_state(core, processor_id);
+    CoreDebugState& state = get_state(core);
     uint8_t noc_id = event.noc;
     update_latest_risc_timestamp(core, processor_id, timestamp);
 
@@ -150,7 +149,7 @@ void NOCDebugState::handle_write_barrier_event(
 
 void NOCDebugState::handle_write_flush_event(
     tt_cxy_pair core, int processor_id, uint64_t timestamp, NocWriteFlushEvent event) {
-    CoreDebugState& state = get_state(core, processor_id);
+    CoreDebugState& state = get_state(core);
     uint8_t noc_id = event.noc;
     update_latest_risc_timestamp(core, processor_id, timestamp);
 
@@ -166,13 +165,18 @@ void NOCDebugState::update_latest_risc_timestamp(tt_cxy_pair core, int processor
 }
 
 NOCDebugIssue NOCDebugState::get_issues(tt_cxy_pair core, int processor_id) const {
-    const CoreDebugState& state = get_state(core, processor_id);
+    std::unique_lock<std::mutex> lock{cores_mutex};
+    const CoreDebugState& state = get_state(core);
     return state.issue[processor_id];
 }
 
-void NOCDebugState::reset_state() { cores.clear(); }
+void NOCDebugState::reset_state() {
+    std::unique_lock<std::mutex> lock{cores_mutex};
+    cores.clear();
+}
 
 void NOCDebugState::push_event(size_t chip_id, uint64_t timestamp, int processor_id, const NOCDebugEvent& event) {
+    std::unique_lock<std::mutex> lock{cores_mutex};
     std::visit(
         [&](auto&& e) {
             using T = std::decay_t<decltype(e)>;

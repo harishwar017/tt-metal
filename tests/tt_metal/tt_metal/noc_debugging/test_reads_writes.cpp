@@ -111,6 +111,8 @@ void RunWritesTest(
 
     fixture->RunProgram(mesh_device, workload);
 
+    ReadMeshDeviceProfilerResults(*mesh_device);
+
     VerifyIssuesOnAllCores(
         mesh_device,
         grid_start,
@@ -177,6 +179,8 @@ void RunReadsTest(
     workload.add_program(device_range, std::move(program));
 
     fixture->RunProgram(mesh_device, workload);
+
+    ReadMeshDeviceProfilerResults(*mesh_device);
 
     VerifyIssuesOnAllCores(
         mesh_device,
@@ -251,6 +255,8 @@ void RunInterleavedReadsWritesTest(
     workload.add_program(device_range, std::move(program));
 
     fixture->RunProgram(mesh_device, workload);
+
+    ReadMeshDeviceProfilerResults(*mesh_device);
 
     VerifyIssuesOnAllCores(
         mesh_device,

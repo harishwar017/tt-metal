@@ -1773,6 +1773,7 @@ void DeviceProfiler::readTsData16BMarkerData(
     const std::vector<uint64_t>& trailer_data,
     uint32_t timer_id,
     uint64_t timestamp) {
+#if defined(TRACY_ENABLE)
     ZoneScoped;
 
     using EMD = KernelProfilerNocEventMetadata;
@@ -1840,6 +1841,7 @@ void DeviceProfiler::readTsData16BMarkerData(
     device_tracy_contexts.try_emplace({device_id, physical_core}, nullptr);
 
     updateFirstTimestamp(timestamp);
+#endif
 }
 
 struct DispatchMetaData {
@@ -2585,7 +2587,7 @@ void DeviceProfiler::pollDebugDumpResults(
                         "DRAM "
                         "buffer address on device: {}, "
                         "Expected DRAM buffer address: {}, index: {}, "
-                        "Complimentary DRAM buffer address if switched indices: {}",
+                        "Complementary DRAM buffer address if switched indices: {}",
                         enchantum::to_string(risc_type),
                         virtual_core.str(),
                         dram_buffer_address,

@@ -59,6 +59,7 @@
 #include <umd/device/types/core_coordinates.hpp>
 #include <umd/device/types/xy_pair.hpp>
 #include <llrt/tt_cluster.hpp>
+#include <impl/debug/noc_debugging.hpp>
 
 #if !defined(TRACY_ENABLE) && defined(__clang__)
 #pragma clang diagnostic push
@@ -1114,8 +1115,12 @@ void ReadMeshDeviceProfilerResults(
     }
 
     // Manual reading of device profiler results is not supported when there is already another thread reading the
-    // results
+    // results. Signal the debug dump thread to do a read instead.
     if (getDeviceDebugDumpEnabled()) {
+        if (auto& profiler_state_manager = MetalContext::instance().profiler_state_manager()) {
+            profiler_state_manager->signal_debug_dump_read();
+            MetalContext::instance().noc_debug_state()->reset_state();
+        }
         return;
     }
 

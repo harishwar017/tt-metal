@@ -39,6 +39,18 @@ void copy_dest_value(const uint dst_index_in, const uint dst_index_out, const ui
     }
 }
 
+template <bool APPROXIMATION_MODE, bool is_fp32_dest_acc_en, int ITERATIONS = 8>
+void copy_dest_value_uint(const uint dst_index_in0, const uint dst_index_in1, const uint dst_index_out /* unused */) {
+    constexpr uint8_t instr_mod_index = is_fp32_dest_acc_en ? InstrModLoadStore::INT32 : InstrModLoadStore::LO16;
+    // size of each tile in Dest is 64 rows
+    constexpr uint dst_tile_size = 64;
+    for (int d = 0; d < ITERATIONS; d++) {
+        TT_SFPLOAD(p_sfpu::LREG0, instr_mod_index, ADDR_MOD_7, dst_index_in1 * dst_tile_size);
+        TT_SFPSTORE(p_sfpu::LREG0, instr_mod_index, ADDR_MOD_7, dst_index_in0 * dst_tile_size);
+        dst_reg++;
+    }
+}
+
 void copy_dest_value_init() {
     // No initialization required
 }

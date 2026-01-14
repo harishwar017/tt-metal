@@ -724,8 +724,8 @@ Pool2D::MultiCore::cached_program_t pool2d_multi_core_sharded_with_halo_v2_impl_
         intra_kernel_down_left_wrap_inc,                                                     // 47
         intra_kernel_right_inc_cb_id,                                                        // 48
         intra_kernel_down_left_wrap_inc_cb_id,                                               // 49
-        (uint32_t)indexes_32_bit                                                             // 50
-            config_tensor_in_dram,                                                           // 51
+        (uint32_t)indexes_32_bit,                                                            // 50
+        config_tensor_in_dram,                                                               // 51
         one_scalar_per_core ? 0 : config_tensor.device_storage().get_buffer()->address(),    // 52
         one_scalar_per_core ? 0 : config_tensor.device_storage().get_buffer()->page_size(),  // 53
         reader_indices_storage.get_buffer()->address(),                                      // 54

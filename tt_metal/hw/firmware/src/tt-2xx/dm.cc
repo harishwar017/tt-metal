@@ -10,6 +10,7 @@
 #include "api/debug/dprint.h"
 #include "internal/dataflow_buffer_init.h"
 #include "internal/debug/stack_usage.h"
+#include "internal/dataflow_buffer_interface.h"
 
 uint8_t noc_index;
 
@@ -40,8 +41,8 @@ int32_t bank_to_l1_offset[NUM_L1_BANKS] __attribute__((used));
 tt_l1_ptr mailboxes_t* const mailboxes = (tt_l1_ptr mailboxes_t*)(UNCACHED_MEM_MAILBOX_BASE);
 tt_l1_ptr subordinate_map_t* const subordinate_sync = (subordinate_map_t*)mailboxes->subordinate_sync.map;
 
-// move to dfb related header
-extern thread_local LocalDFBInterface g_dfb_interface[32] __attribute__((used));
+// Definition of the global DFB interface array (declared extern in dataflow_buffer_init.h)
+thread_local ::experimental::LocalDFBInterface g_dfb_interface[32] __attribute__((used));
 
 void device_setup() {
     // instn_buf
@@ -178,7 +179,7 @@ extern "C" uint32_t _start1() {
                 //     { subordinate_sync.dm1 = RUN_SYNC_MSG_LOAD;
                 // }
                 // Copies from L1 to IRAM on chips where NCRISC has IRAM
-                uint32_t kernel_config_base = firmware_config_init(mailboxes, ProgrammableCoreType::TENSIX, hartid);
+                uintptr_t kernel_config_base = firmware_config_init(mailboxes, ProgrammableCoreType::TENSIX, hartid);
                 // Invalidate the i$ now the kernels have loaded and before running
                 // volatile tt_reg_ptr uint32_t* cfg_regs = core.cfg_regs_base(0);
                 // cfg_regs[RISCV_IC_INVALIDATE_InvalidateAll_ADDR32] =
@@ -207,17 +208,21 @@ extern "C" uint32_t _start1() {
                 // }
                 // prev_noc_mode = noc_mode;
 
-                // uint32_t tt_l1_ptr* cb_l1_base =
-                //     (uint32_t tt_l1_ptr*)(kernel_config_base + launch_msg_address->kernel_config.local_cb_offset);
+                uint32_t tt_l1_ptr* cb_l1_base =
+                    (uint32_t tt_l1_ptr*)(kernel_config_base + launch_msg_address->kernel_config.local_cb_offset);
+                DPRINT << "kernel config base: " << HEX() << kernel_config_base << " local cb offset: " << HEX()
+                       << launch_msg_address->kernel_config.local_cb_offset << ENDL();
                 start_subordinate_kernel_run_early(enables);
 
                 // Run the kernel
                 WAYPOINT("R");
                 int index = static_cast<std::underlying_type<TensixProcessorTypes>::type>(TensixProcessorTypes::DM0);
+                // DPRINT << "will run maybe" << ENDL();
                 if (enables & (1u << index)) {
+                    // DPRINT << "will run yes 1" << ENDL();
                     uint32_t local_cb_mask = launch_msg_address->kernel_config.local_cb_mask;
                     // TODO: setup DataFlowBuffers
-                    setup_local_dfb_interfaces(cb_l1_base, local_cb_mask);
+                    experimental::setup_local_dfb_interfaces(cb_l1_base, local_cb_mask);
                     // setup_local_cb_read_write_interfaces<true, true, false>(cb_l1_base, 0, local_cb_mask);
                     // cb_l1_base =
                     //     (uint32_t tt_l1_ptr*)(kernel_config_base +
@@ -229,6 +234,9 @@ extern "C" uint32_t _start1() {
                     uint32_t kernel_lma =
                         (kernel_config_base + launch_msg_address->kernel_config.kernel_text_offset[index]);
                     asm("FENCE.i");
+                    DPRINT << "kernel config base: " << HEX() << kernel_config_base << " kernel text offset: " << HEX()
+                           << launch_msg_address->kernel_config.kernel_text_offset[index] << " kernel lma: " << HEX()
+                           << kernel_lma << ENDL();
                     auto stack_free = reinterpret_cast<uint32_t (*)()>(kernel_lma)();
                     record_stack_usage(stack_free);
                 } else {
@@ -313,6 +321,7 @@ extern "C" uint32_t _start1() {
             }
             asm("nop; nop; nop; nop; nop");
         }
+        // DPRINT << "will run subordinate" << ENDL();
         uint32_t launch_msg_rd_ptr = mailboxes->launch_msg_rd_ptr;
         launch_msg_t* launch_msg = &(mailboxes->launch[launch_msg_rd_ptr]);
 
@@ -325,7 +334,7 @@ extern "C" uint32_t _start1() {
             (uint32_t tt_l1_ptr*)(kernel_config_base + launch_msg->kernel_config.local_cb_offset);
         uint32_t local_cb_mask = launch_msg->kernel_config.local_cb_mask;
 
-        setup_local_dfb_interfaces(cb_l1_base, local_cb_mask);
+        experimental::setup_local_dfb_interfaces(cb_l1_base, local_cb_mask);
         // setup_local_cb_read_write_interfaces<true, true, false>(cb_l1_base, 0, local_cb_mask);
 
         // cb_l1_base = (uint32_t tt_l1_ptr*)(kernel_config_base + launch_msg->kernel_config.remote_cb_offset);

@@ -757,35 +757,45 @@ void LaunchProgram(IDevice* device, Program& program, bool wait_until_cores_done
         // don't get the GO mailbox (eg, storage cores) have all landed
         MetalContext::instance().get_cluster().l1_barrier(device->id());
 
-        // std::vector<std::vector<CoreCoord>> logical_cores_used_in_program = program.impl().logical_cores();
-        // std::unordered_set<CoreCoord> not_done_cores;
-        // const auto& hal = MetalContext::instance().hal();
-        // for (uint32_t programmable_core_type_index = 0;
-        //      programmable_core_type_index < logical_cores_used_in_program.size();
-        //      programmable_core_type_index++) {
-        //     CoreType core_type = hal.get_core_type(programmable_core_type_index);
-        //     for (const auto& logical_core : logical_cores_used_in_program[programmable_core_type_index]) {
-        //         auto* kg = program.impl().kernels_on_core(logical_core, programmable_core_type_index);
-        //         kg->launch_msg.view().kernel_config().host_assigned_id() = program.get_runtime_id();
+        std::vector<uint8_t> rdback(184);
 
-        //         auto physical_core = device->virtual_core_from_logical_core(logical_core, core_type);
-        //         not_done_cores.insert(physical_core);
-        //         if (force_slow_dispatch) {
-        //             tt::llrt::send_reset_go_signal(device->id(), physical_core);
-        //         }
+        std::vector<std::vector<CoreCoord>> logical_cores_used_in_program = program.impl().logical_cores();
+        std::unordered_set<CoreCoord> not_done_cores;
+        const auto& hal = MetalContext::instance().hal();
+        for (uint32_t programmable_core_type_index = 0;
+             programmable_core_type_index < logical_cores_used_in_program.size();
+             programmable_core_type_index++) {
+            CoreType core_type = hal.get_core_type(programmable_core_type_index);
+            for (const auto& logical_core : logical_cores_used_in_program[programmable_core_type_index]) {
+                std::cout << "Writing launch msg to core " << logical_core.str() << std::endl;
+                auto* kg = program.impl().kernels_on_core(logical_core, programmable_core_type_index);
+                kg->launch_msg.view().kernel_config().host_assigned_id() = program.get_runtime_id();
 
-        //         tt::llrt::write_launch_msg_to_core(
-        //             device->id(),
-        //             physical_core,
-        //             kg->launch_msg.view(),
-        //             kg->go_msg.view(),
-        //             device->get_dev_addr(physical_core, HalL1MemAddrType::LAUNCH));
-        //     }
-        // }
-        // if (wait_until_cores_done) {
-        //     // Wait for all cores to be done
-        //     llrt::internal_::wait_until_cores_done(device_id, dev_msgs::RUN_MSG_GO, not_done_cores);
-        // }
+                auto physical_core = device->virtual_core_from_logical_core(logical_core, core_type);
+
+                MetalContext::instance().get_cluster().read_core(
+                    rdback.data(), 184, tt_cxy_pair(device_id, physical_core), 0xf4b0);
+                for (auto& byte : rdback) {
+                    log_info(tt::LogMetal, "RD back byte: 0x{:x}", byte);
+                }
+
+                not_done_cores.insert(physical_core);
+                if (force_slow_dispatch) {
+                    tt::llrt::send_reset_go_signal(device->id(), physical_core);
+                }
+
+                tt::llrt::write_launch_msg_to_core(
+                    device->id(),
+                    physical_core,
+                    kg->launch_msg.view(),
+                    kg->go_msg.view(),
+                    device->get_dev_addr(physical_core, HalL1MemAddrType::LAUNCH));
+            }
+        }
+        if (wait_until_cores_done) {
+            // Wait for all cores to be done
+            llrt::internal_::wait_until_cores_done(device_id, dev_msgs::RUN_MSG_GO, not_done_cores);
+        }
     }  // Profiler scope end
     if (wait_until_cores_done) {
         detail::ReadDeviceProfilerResults(device);
@@ -887,7 +897,21 @@ bool ConfigureDeviceWithProgram(IDevice* device, Program& program, bool force_sl
                         offset += serialized.size();
                     }
                     uint64_t addr = kernel_config_base + program.impl().get_program_config(index).dfb_offset;
+                    log_info(
+                        tt::LogMetal,
+                        "Writing DFB config to core {} at addr 0x{:x} (kernel_config_base=0x{:x}, dfb_offset=0x{:x}) "
+                        "size: {}",
+                        physical_core.str(),
+                        addr,
+                        kernel_config_base,
+                        program.impl().get_program_config(index).dfb_offset,
+                        dfb_config_vec.size());
+                    for (auto& byte : dfb_config_vec) {
+                        log_info(tt::LogMetal, "DFB config byte: 0x{:x}", byte);
+                    }
                     MetalContext::instance().get_cluster().write_core(device_id, physical_core, dfb_config_vec, addr);
+                } else {
+                    log_info(tt::LogMetal, "No DFB config to write to core {}", physical_core.str());
                 }
             }
             program.impl().init_semaphores(*device, logical_core, index);

@@ -62,6 +62,15 @@ std::vector<uint8_t> DataflowBufferImpl::serialize() const {
     init.dm_risc_mask = this->dm_risc_mask;
     init.tensix_risc_mask = this->tensix_risc_mask;
 
+    log_info(
+        tt::LogMetal,
+        "Serializing DFB {} with {} producers and {} consumers. DM mask {}. Tensix mask {}.",
+        this->id,
+        this->config.num_producers,
+        this->config.num_consumers,
+        (uint32_t)this->dm_risc_mask,
+        (uint32_t)this->tensix_risc_mask);
+
     auto* init_bytes = reinterpret_cast<const uint8_t*>(&init);
     data.insert(data.end(), init_bytes, init_bytes + sizeof(init));
 
@@ -71,6 +80,15 @@ std::vector<uint8_t> DataflowBufferImpl::serialize() const {
 
         // Copy arrays - rd_ptr/wr_ptr start at base_addr
         for (int i = 0; i < 4; i++) {
+            log_info(
+                tt::LogMetal,
+                "\tBase addr: {}, Limit: {}, Rd ptr: {}, Wr ptr: {}, Packed tile counter: {}, Txn ids: {}",
+                rc.config.base_addr[i],
+                rc.config.limit[i],
+                rc.config.base_addr[i],
+                rc.config.base_addr[i],
+                rc.config.packed_tile_counter[i],
+                rc.config.txn_ids[i]);
             device_config.base_addr[i] = rc.config.base_addr[i] >> 4;
             device_config.limit[i] = rc.config.limit[i] >> 4;
             device_config.rd_ptr[i] = rc.config.base_addr[i] >> 4;
@@ -81,18 +99,29 @@ std::vector<uint8_t> DataflowBufferImpl::serialize() const {
 
         // Union handling: producers write capacity, consumers write entry/stride
         if (rc.is_producer) {
+            log_info(tt::LogMetal, "\tSet capacity: {}, Capacity: {}", rc.config.set_capacity, rc.config.capacity);
             device_config.set_capacity = rc.config.set_capacity;
             device_config.capacity = rc.config.capacity;
         } else {
+            log_info(tt::LogMetal, "\tEntry size: {}, Stride size: {}", rc.config.entry_size, rc.config.stride_size);
             device_config.entry_size = rc.config.entry_size >> 4;
             device_config.stride_size = rc.config.stride_size >> 4;
         }
 
-        device_config.num_tiles_per_txn_id = rc.config.num_tiles_per_txn_id;
-        device_config.num_tiles_per_txn_id_per_tc = rc.config.num_tiles_per_txn_id_per_tc;
+        device_config.num_entries_per_txn_id = rc.config.num_entries_per_txn_id;
+        device_config.num_entries_per_txn_id_per_tc = rc.config.num_entries_per_txn_id_per_tc;
         device_config.remapper_pair_index = rc.config.remapper_pair_index;
         device_config.num_tcs_to_rr = rc.config.num_tcs_to_rr;
         device_config.num_txn_ids = rc.config.num_txn_ids;
+        log_info(
+            tt::LogMetal,
+            "\tNum entries per txn id: {}, Num entries per txn id per tc: {}, Remapper pair index: {}, Num TCs to rr: "
+            "{}, Num txn ids: {}",
+            rc.config.num_entries_per_txn_id,
+            rc.config.num_entries_per_txn_id_per_tc,
+            rc.config.remapper_pair_index,
+            rc.config.num_tcs_to_rr,
+            rc.config.num_txn_ids);
 
         auto* cfg_bytes = reinterpret_cast<const uint8_t*>(&device_config);
         data.insert(data.end(), cfg_bytes, cfg_bytes + sizeof(device_config));
@@ -174,6 +203,13 @@ uint32_t ProgramImpl::add_dataflow_buffer(const CoreRangeSet& core_range_set, co
     dfb->dm_risc_mask = 0;
     dfb->tensix_risc_mask = 0;  // Keep at 0 for now
 
+    log_info(
+        tt::LogMetal,
+        "Creating DFB {} with {} producers and {} consumers",
+        dfb->id,
+        config.num_producers,
+        config.num_consumers);
+
     uint32_t capacity;
     switch (config.cap) {
         case ::experimental::AccessPattern::STRIDED:
@@ -208,15 +244,26 @@ uint32_t ProgramImpl::add_dataflow_buffer(const CoreRangeSet& core_range_set, co
         producer_config.is_producer = true;
         producer_config.is_dm_risc = true;
 
+        log_info(tt::LogMetal, "Producer {} uses {} TCs", producer_risc_id, num_producer_tcs);
+
         // Fill arrays for round-robin TCs
         for (uint8_t tc = 0; tc < num_producer_tcs; tc++) {
             producer_config.config.packed_tile_counter[tc] = tile_counter_allocator_.allocate(producer_risc_id);
+            log_info(tt::LogMetal, "\tAssigned TC {}", tc, (uint32_t)producer_config.config.packed_tile_counter[tc]);
         }
         producer_config.config.num_tcs_to_rr = num_producer_tcs;
         producer_config.config.entry_size = config.entry_size;
         producer_config.config.stride_size = config.entry_size * config.num_producers;
         producer_config.config.set_capacity = true;
         producer_config.config.capacity = capacity;
+
+        log_info(
+            tt::LogMetal,
+            "\tEntry size: {}, Stride size: {}, Set capacity: {}, Capacity: {}",
+            config.entry_size,
+            config.entry_size * config.num_producers,
+            true,
+            capacity);
 
         dfb->risc_configs.push_back(std::move(producer_config));
     }
@@ -231,10 +278,14 @@ uint32_t ProgramImpl::add_dataflow_buffer(const CoreRangeSet& core_range_set, co
         consumer_config.is_producer = false;
         consumer_config.is_dm_risc = true;
 
+        log_info(tt::LogMetal, "Consumer {} uses {} TCs", consumer_risc_id, num_consumer_tcs);
+
         // Fill arrays for round-robin TCs
         for (uint8_t tc = 0; tc < num_consumer_tcs; tc++) {
             if (config.cap == ::experimental::AccessPattern::STRIDED) {
                 consumer_config.config.packed_tile_counter[tc] = get_shared_tc_for_consumer(dfb.get(), c, tc);
+                log_info(
+                    tt::LogMetal, "\tAssigned TC {}", tc, (uint32_t)consumer_config.config.packed_tile_counter[tc]);
             } else {
                 TT_FATAL(false, "Need to implement blocked consumer access pattern");
             }
@@ -243,8 +294,18 @@ uint32_t ProgramImpl::add_dataflow_buffer(const CoreRangeSet& core_range_set, co
         consumer_config.config.entry_size = config.entry_size;
         consumer_config.config.stride_size = config.entry_size * config.num_consumers;
 
+        log_info(
+            tt::LogMetal,
+            "\tEntry size: {}, Stride size: {}, Set capacity: {}, Capacity: {}",
+            config.entry_size,
+            config.entry_size * config.num_consumers,
+            false,
+            capacity);
+
         dfb->risc_configs.push_back(std::move(consumer_config));
     }
+
+    log_info(tt::LogMetal, "DFB {} dm risc mask: {}", dfb->id, (uint32_t)dfb->dm_risc_mask);
 
     this->dataflow_buffers_.push_back(dfb);
     this->dataflow_buffer_by_id_.insert({dfb->id, dfb});
@@ -257,6 +318,9 @@ uint32_t ProgramImpl::add_dataflow_buffer(const CoreRangeSet& core_range_set, co
             }
         }
     }
+
+    // Mark that allocation is needed (similar to invalidate_circular_buffer_allocation)
+    this->local_dataflow_buffer_allocation_needed_ = true;
 
     return dfb->id;
 }

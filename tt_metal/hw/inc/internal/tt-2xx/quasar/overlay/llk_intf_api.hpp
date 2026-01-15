@@ -13,7 +13,7 @@
 
 #pragma once
 
-#include "overlay_reg.h"
+#include "meta/registers/overlay_reg.h"
 #include "rocc_instructions.hpp"
 
 /**

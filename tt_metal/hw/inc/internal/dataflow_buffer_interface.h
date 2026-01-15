@@ -58,8 +58,8 @@ struct LocalDFBInterface {
 
     PackedTileCounter packed_tile_counter[4];
     uint8_t txn_ids[4];
-    uint8_t num_tiles_per_txn_id;
-    uint8_t num_tiles_per_txn_id_per_tc;
+    uint8_t num_entries_per_txn_id;
+    uint8_t num_entries_per_txn_id_per_tc;
     uint8_t remapper_pair_index;
     uint8_t num_tcs_to_rr;
     uint8_t num_txn_ids;

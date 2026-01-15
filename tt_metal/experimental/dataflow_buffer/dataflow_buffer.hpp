@@ -52,8 +52,8 @@ struct LocalDFBInterfaceHost {
 
     std::array<::experimental::PackedTileCounter, 4> packed_tile_counter = {0};
     std::array<uint8_t, 4> txn_ids = {0};
-    uint8_t num_tiles_per_txn_id = 0;
-    uint8_t num_tiles_per_txn_id_per_tc = 0;
+    uint8_t num_entries_per_txn_id = 0;
+    uint8_t num_entries_per_txn_id_per_tc = 0;
     uint8_t remapper_pair_index = 0xFF;
     uint8_t num_tcs_to_rr = 1;
     uint8_t num_txn_ids = 0;

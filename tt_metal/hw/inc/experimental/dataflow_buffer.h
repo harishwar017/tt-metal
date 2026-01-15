@@ -5,7 +5,8 @@
 #pragma once
 
 #include "internal/dataflow_buffer_interface.h"
-#include "debug/assert.h"
+#include "internal/dataflow_buffer_init.h"  // For g_dfb_interface extern declaration
+#include "api/debug/assert.h"
 
 // TODO: make this the top level api header but then separate out 1xx and 2xx implementations
 
@@ -48,7 +49,7 @@ public:
 
     void push_back(uint16_t num_entries) {
         ASSERT(num_entries == 1);
-        LocalDFBInterface& local_dfb_interface = g_dfb_interface[logical_dfb_id _];
+        LocalDFBInterface& local_dfb_interface = g_dfb_interface[logical_dfb_id_];
         PackedTileCounter packed_tc = local_dfb_interface.packed_tile_counter[counter_idx_];
         uint8_t tc_id = get_counter_id(packed_tc);
 #ifdef COMPILE_FOR_TRISC
@@ -58,12 +59,12 @@ public:
         fast_llk_intf_inc_posted(tensix_id, tc_id, num_entries);
 #endif
 
-        local_dfb_interface.wr_ptr[counter_idx_] += (num_pages * local_dfb_interface.stride_size);
+        local_dfb_interface.wr_ptr[counter_idx_] += (num_entries * local_dfb_interface.stride_size);
         if (local_dfb_interface.wr_ptr[counter_idx_] == local_dfb_interface.limit[counter_idx_]) {
             local_dfb_interface.wr_ptr[counter_idx_] = local_dfb_interface.base_addr[counter_idx_];
         }
 
-        counter_index_ = (counter_index_ + 1) % local_dfb_interface.num_tcs_to_rr;
+        counter_idx_ = (counter_idx_ + 1) % local_dfb_interface.num_tcs_to_rr;
     }
 
     void wait_front(uint16_t num_entries) {
@@ -90,11 +91,11 @@ public:
         fast_llk_intf_inc_acked(tensix_id, tc_id, num_entries);
 #endif
 
-        local_dfb_interface.rd_ptr[counter_idx_] += (num_pages * local_dfb_interface.stride_size);
+        local_dfb_interface.rd_ptr[counter_idx_] += (num_entries * local_dfb_interface.stride_size);
         if (local_dfb_interface.rd_ptr[counter_idx_] == local_dfb_interface.limit[counter_idx_]) {
             local_dfb_interface.rd_ptr[counter_idx_] = local_dfb_interface.base_addr[counter_idx_];
         }
-        counter_index_ = (counter_index_ + 1) % local_dfb_interface.num_tcs_to_rr;
+        counter_idx_ = (counter_idx_ + 1) % local_dfb_interface.num_tcs_to_rr;
     }
     // Explicit sync APIs end
 

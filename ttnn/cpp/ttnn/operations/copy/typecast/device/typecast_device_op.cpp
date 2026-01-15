@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC.
+// SPDX-FileCopyrightText: © 2026 Tenstorrent AI ULC.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,11 +12,47 @@ namespace ttnn::operations::copy {
 TypecastDeviceOperation::program_factory_t TypecastDeviceOperation::select_program_factory(
     const operation_attributes_t& args, const tensor_args_t& tensor_args) {
     if (tensor_args.input.is_sharded()) {
+        log_debug(tt::LogOp, "Using TypecastShardedProgramFactory");
         return program::TypecastShardedProgramFactory{};
     }
     if (args.sub_core_grids.has_value()) {
+        log_debug(tt::LogOp, "Using TypecastSubgridProgramFactory");
         return program::TypecastSubgridProgramFactory{};
     }
+
+    const auto& input = tensor_args.input;
+    if (input.layout() == Layout::ROW_MAJOR) {
+        // FIXME(vtsilytskyi):
+        // TypecastRowMajorChunkedProgramFactory uses streaming approach to handle large tensors.
+        // Downside - it is slower than naive implementation, which uses unary eltwise kernels.
+        // Despite RM support was recently added to unary eltwise kernels and added to TypecastProgramFactory
+        // we cannot use it here yet, because it fails on input chunks > 1024 elements.
+        // Once fixed, please uncomment heuristic check code below. Rows, that fits L1 memory
+        // should be handled in naive way via TypecastProgramFactory.
+
+        // constexpr uint32_t max_l1_budget_bytes = 512 * 1024;  // 512KB budget for typecast CBs
+        // constexpr uint32_t num_input_pages = 2;               // Double buffering
+        // constexpr uint32_t num_output_pages = 2;              // Double buffering
+
+        // const tt::DataFormat input_data_format = tt::tt_metal::datatype_to_dataformat_converter(input.dtype());
+        // const tt::DataFormat output_data_format = tt::tt_metal::datatype_to_dataformat_converter(args.output_dtype);
+        // const uint32_t input_element_size = tt::datum_size(input_data_format);
+        // const uint32_t output_element_size = tt::datum_size(output_data_format);
+
+        // const auto& padded_shape = input.padded_shape();
+        // const uint32_t row_width_elements = padded_shape[padded_shape.rank() - 1];
+        // const uint32_t input_row_size = row_width_elements * input_element_size;
+        // const uint32_t output_row_size = row_width_elements * output_element_size;
+        // const uint32_t total_cb_size = num_input_pages * input_row_size + num_output_pages * output_row_size;
+
+        // // Use chunked factory if double buffering would exceed L1 budget
+        // if (total_cb_size > max_l1_budget_bytes) {
+        log_debug(tt::LogOp, "Using TypecastRowMajorChunkedProgramFactory");
+        return program::TypecastRowMajorChunkedProgramFactory{};
+        // }
+    }
+
+    log_debug(tt::LogOp, "Using TypecastProgramFactory");
     return program::TypecastProgramFactory{};
 }
 

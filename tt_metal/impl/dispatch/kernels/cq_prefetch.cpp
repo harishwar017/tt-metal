@@ -325,18 +325,22 @@ FORCE_INLINE uint32_t read_from_pcie(
             // Calculate available space from base to cmd_ptr
             uint32_t available_space = cmd_ptr - cmddat_q_base;
             uint32_t needed_space = size + preamble_size;
+            // The write will be [cmddat_q_base + preamble_size, cmddat_q_base + needed_space)
+            // So the write end is at: cmddat_q_base + needed_space
+            uint32_t write_end = cmddat_q_base + needed_space;
 
             DPRINT << "read_from_pcie: checking wrap - cmd_ptr=" << HEX() << cmd_ptr << " fence=" << fence
-                   << " needed_space=" << needed_space << " available_space=" << available_space << ENDL();
+                   << " needed_space=" << needed_space << " available_space=" << available_space
+                   << " write_end=" << write_end << " base=" << cmddat_q_base << ENDL();
 
             // We need enough space from base to cmd_ptr to fit the write
             // The write will be [cmddat_q_base + preamble_size, cmddat_q_base + needed_space)
             // So we need: cmddat_q_base + needed_space < cmd_ptr (strict inequality to avoid touching cmd_ptr)
-            // Which is: needed_space < (cmd_ptr - cmddat_q_base) = available_space
-            if (needed_space >= available_space) {
+            // Which is: write_end < cmd_ptr
+            if (write_end >= cmd_ptr) {
                 // Not enough space - would overwrite or touch unprocessed commands at cmd_ptr
-                DPRINT << "read_from_pcie: REJECT wrap - insufficient space (needed=" << needed_space
-                       << " >= available=" << available_space << ")" << ENDL();
+                DPRINT << "read_from_pcie: REJECT wrap - insufficient space (write_end=" << HEX() << write_end
+                       << " >= cmd_ptr=" << cmd_ptr << ")" << ENDL();
                 return pending_read_size;
             }
             DPRINT << "read_from_pcie: ALLOW wrap - sufficient space available" << ENDL();

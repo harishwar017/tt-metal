@@ -6,11 +6,14 @@
 // #include "risc_common.h"
 #include "internal/risc_attribs.h"
 #include "internal/debug/watcher_common.h"
+#include "internal/debug/sanitize.h"
 #include "api/debug/waypoint.h"
 #include "api/debug/dprint.h"
 #include "internal/dataflow_buffer_init.h"
 #include "internal/debug/stack_usage.h"
 #include "internal/dataflow_buffer_interface.h"
+#include "hostdev/dev_msgs.h"
+#include "tools/profiler/kernel_profiler.hpp"
 
 uint8_t noc_index;
 

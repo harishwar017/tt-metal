@@ -25,6 +25,7 @@ from models.experimental.stable_diffusion_xl_base.tests.test_common import (
     batch_encode_prompt_on_device,
     retrieve_timesteps,
     run_tt_image_gen,
+    determinate_min_batch_size,
 )
 from models.common.utility_functions import profiler
 
@@ -74,9 +75,7 @@ class TtSDXLPipeline(LightweightModule):
 
         self.ttnn_device = ttnn_device
         self.cpu_device = "cpu"
-        self.batch_size = (
-            list(self.ttnn_device.shape)[1] if pipeline_config.use_cfg_parallel else ttnn_device.get_num_devices()
-        )
+        self.batch_size = determinate_min_batch_size(ttnn_device, pipeline_config.use_cfg_parallel)
         self.torch_pipeline = torch_pipeline
         self.pipeline_config = pipeline_config
         self._reset_num_inference_steps()
@@ -89,9 +88,9 @@ class TtSDXLPipeline(LightweightModule):
         self.allocated_device_tensors = False
         self.generated_input_tensors = False
 
+        os.environ["TT_MM_THROTTLE_PERF"] = "5"
         if pipeline_config.is_galaxy:
             logger.info("Setting TT_MM_THROTTLE_PERF for Galaxy")
-            os.environ["TT_MM_THROTTLE_PERF"] = "5"
             assert (
                 os.environ["TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE"] == "7,7"
             ), "TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE is not set to 7,7, and it needs to be set for Galaxy"

@@ -7,7 +7,7 @@ The following set of commands will generate perf reports for ``bert_tiny`` as an
 
     cd $TT_METAL_HOME
     build_metal.sh
-    ./tools/tracy/profile_this.py -n bert_tiny -c "pytest models/demos/bert_tiny/demo/demo.py::test_demo[models/demos/bert_tiny/demo/input_data.json-mrm8488/bert-tiny-finetuned-squadv2-128-8-device_params0]"
+    ./tools/tracy/profile_this.py -n bert_tiny -c "pytest models/demos/wormhole/bert_tiny/demo/demo.py::test_demo"
 
 After the commands finish, the location of the generated csv will be printed on console similar to the image below:
 
@@ -20,7 +20,7 @@ The ``profile_this.py`` script and its CLI options are explained under `profile_
 
 The headers for the CSV are explained under `Perf Report Headers`_.
 
-Instructions on using the performance report with `TT-NN Visualizer <https://github.com/tenstorrent/ttnn-visualizer>`_ are under `Using the Performance Report with TT-NN Visualizer`_.
+Instructions on using the performance report with `TT-NN Visualizer <https://github.com/tenstorrent/ttnn-visualizer>`_ can be found in their documentation under `Loading Data <https://docs.tenstorrent.com/ttnn-visualizer/src/installing.html#loading-data>`_.
 
 **IMPORTANT NOTES**:
 

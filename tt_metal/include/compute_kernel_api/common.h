@@ -19,6 +19,15 @@ extern thread_local uint32_t tt_l1_ptr* crta_l1_base;
 extern uint32_t tt_l1_ptr* rta_l1_base;
 extern uint32_t tt_l1_ptr* crta_l1_base;
 #endif
+#if defined(WATCHER_ENABLED) && !defined(WATCHER_DISABLE_ASSERT)
+#ifdef ARCH_QUASAR
+extern thread_local uint32_t rta_count;
+extern thread_local uint32_t crta_count;
+#else
+extern uint32_t rta_count;
+extern uint32_t crta_count;
+#endif
+#endif
 
 // clang-format off
 /**
@@ -34,7 +43,6 @@ extern uint32_t tt_l1_ptr* crta_l1_base;
 // clang-format on
 static FORCE_INLINE uint32_t get_arg_addr(int arg_idx) {
 #if defined(WATCHER_ENABLED) && !defined(WATCHER_DISABLE_ASSERT)
-    extern uint32_t rta_count;
     ASSERT(arg_idx >= 0 && (uint32_t)arg_idx < rta_count, DebugAssertRtaOutOfBounds);
 #endif
     return (uint32_t)&rta_l1_base[arg_idx];
@@ -54,7 +62,6 @@ static FORCE_INLINE uint32_t get_arg_addr(int arg_idx) {
 // clang-format on
 static FORCE_INLINE uint32_t get_common_arg_addr(int arg_idx) {
 #if defined(WATCHER_ENABLED) && !defined(WATCHER_DISABLE_ASSERT)
-    extern uint32_t crta_count;
     ASSERT(arg_idx >= 0 && (uint32_t)arg_idx < crta_count, DebugAssertCrtaOutOfBounds);
 #endif
     return (uint32_t)&crta_l1_base[arg_idx];

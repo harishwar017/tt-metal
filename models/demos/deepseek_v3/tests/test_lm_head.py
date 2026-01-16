@@ -53,6 +53,7 @@ class DeepseekV3LMHead(nn.Module):
     ]
     + [("prefill", seq_len) for seq_len in PREFILL_SEQ_LENS],
 )
+@pytest.mark.requires_device(["TG"])
 def test_forward_pass(
     mode: str,
     seq_len: int,

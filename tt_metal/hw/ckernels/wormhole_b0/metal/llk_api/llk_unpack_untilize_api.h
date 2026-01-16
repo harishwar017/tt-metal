@@ -23,19 +23,7 @@ inline void llk_unpack_untilize_init(std::uint32_t operand = 0) {
 inline void llk_unpack_untilize_uninit(
     [[maybe_unused]] const std::uint32_t operand, [[maybe_unused]] const std::uint32_t face_r_dim = FACE_R_DIM) {
     WAYPOINT("UPUW");
-    // Check that unpacker is done (all contexts freed up) before starting hw configuration
-    wait_for_idle();
-
-    // Reset address counters
-    unpacker_addr_counter_init();
-
-    // Wait for cfg to be free to edit
-    TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::UNPACK);
-
     _llk_unpack_untilize_uninit_();
-
-    TTI_NOP;
-    TTI_NOP;  // Do we need this for WH?
     WAYPOINT("UPUD");
 }
 

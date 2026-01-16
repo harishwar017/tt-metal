@@ -2,39 +2,55 @@
 
 Scripts for validating Blackhole Galaxy Exabox clusters before running workloads.
 
-## Quick Health Check
-
-For day-to-day use when you just need to verify a cluster is working:
-
-```bash
-./create_venv.sh
-source python_env/bin/activate
-./build_metal.sh --build-metal-tests
-```
-
-Then run:
-```bash
-./tools/scaleout/exabox/recover_8x16.sh <host1>,<host2>,<host3>,<host4>
-# or
-./tools/scaleout/exabox/recover_4x32.sh <host1>,<host2>,<host3>,<host4>
-```
-
-Look for `All Detected Links are healthy` in the output.
-
 ## Full Hardware Qualification
 
-When bringing up new clusters or after hardware changes.
+When bringing up new clusters, operators must ensure that all hardware allocated for the system is stable and usable by software. The workflows outlined in this section are designed to do that.
 
-The order matters: physical validation, then dispatch tests, then fabric tests. Physical validation hammers the Ethernet links to make sure they're stable. If links are flaky, fabric tests will just fail with routing errors - you'll waste time debugging software when it's actually a cable. Dispatch tests verify the command queue works on one Galaxy before you try coordinating across the whole cluster.
+These workflows also rely on Dockerized Metal Containers, allowing operators to validate the health of the cluster without having to build Metal.
+
+The order matters: physical validation, then dispatch tests, then fabric tests. Physical validation hammers the Ethernet links to make sure they're stable. If links are flaky, fabric tests will just fail with routing errors - you'll waste time debugging software when it's actually a cable. Dispatch tests stress the compute/memory/data-movement blocks to verify chip stability before you try coordinating across the whole cluster.
 
 ### Prerequisites
 
 - Passwordless SSH to all hosts
-- Docker on all hosts
-- `mpirun-ulfm` available
-- FSD file for your cluster topology
+- `mpirun` available (Docker-based scripts also need `mpirun-ulfm`)
+- FSD file for your cluster topology (on shared mount, should already exist):
+  - 8x16: `/data/local-syseng-manual/5x8x16_fsd.textproto`
+  - 4x32: `/data/local-syseng-manual/4x4x32_fsd.textproto`
 
-To build a Docker image, run the [upstream-tests workflow](https://github.com/tenstorrent/tt-metal/actions/workflows/upstream-tests.yaml) on your branch. It outputs a `ghcr.io` image URL.
+**SSH Setup**
+
+Start an ssh-agent and add your key:
+```bash
+eval $(ssh-agent)
+ssh-add ~/.ssh/<your-key>
+```
+
+Verify you can connect without a password:
+```bash
+ssh <host> hostname
+```
+
+**MPI Check**
+
+Verify MPI can reach all hosts:
+```bash
+mpirun --host <hosts> hostname
+```
+This should print the hostname of each machine. If it hangs or prompts for a password, fix SSH first.
+
+**Docker Image**
+
+For Galaxy clusters, use:
+```
+ghcr.io/tenstorrent/tt-metal/upstream-tests-bh-glx:<tag>
+```
+
+Options for `<tag>`:
+- `latest` - most recent passing build from main
+- A specific version tag (e.g., `v0.66.0-dev20260115-28-g6eccf7061a`) - known-good as of Jan 2026
+
+To build an image from your branch, run the [upstream-tests workflow](https://github.com/tenstorrent/tt-metal/actions/workflows/upstream-tests.yaml). The workflow summary shows the image tag once complete.
 
 ### Physical Validation
 
@@ -58,7 +74,7 @@ This tells you how many iterations passed vs failed, and breaks down failures by
 
 ### Dispatch Tests
 
-Tests command queue dispatch on a single Galaxy (32 chips) - program execution, buffer transfers, multi-device sync.
+Ensures all chips in the cluster are stable. Stress tests the Compute, Memory, and Data-Movement blocks on each chip.
 
 ```bash
 ./tools/scaleout/exabox/run_dispatch_tests.sh <hosts> <docker-image>
@@ -66,12 +82,31 @@ Tests command queue dispatch on a single Galaxy (32 chips) - program execution, 
 
 ### Fabric Tests
 
-Tests the 2D torus fabric - all-to-all patterns, unicast/multicast, data integrity. Only run after physical validation passes.
+Stress tests for the TT-Fabric layer. Ensures TT-Fabric SW and FW is compatible with the cluster topology. Also stresses the physical ethernet interconnect, verifying cluster stability. Only run after physical validation passes.
 
 ```bash
 ./tools/scaleout/exabox/run_fabric_tests_8x16.sh <hosts> <docker-image>
 ./tools/scaleout/exabox/run_fabric_tests_4x32.sh <hosts> <docker-image>
 ```
+
+## Quick Health Check (For Developers)
+comm
+For day-to-day use when you just need to verify a cluster is working. Unlike the Docker-based qualification scripts above, these run directly on the host, so you need a local build:
+
+```bash
+./create_venv.sh
+source python_env/bin/activate
+./build_metal.sh --build-metal-tests
+```
+
+Then run:
+```bash
+./tools/scaleout/exabox/recover_8x16.sh <hosts>
+# or
+./tools/scaleout/exabox/recover_4x32.sh <hosts>
+```
+
+Look for `All Detected Links are healthy` in the output.
 
 ## Troubleshooting
 
@@ -116,7 +151,7 @@ Data Mismatch usually means bad cable or port.
 |--------|---------|
 | `recover_*.sh` | Quick reset + 5 traffic iterations |
 | `run_validation_*.sh` | Full 50-loop validation |
-| `run_dispatch_tests.sh` | Command queue tests (single Galaxy) |
+| `run_dispatch_tests.sh` | Chip stability stress tests |
 | `run_fabric_tests_*.sh` | Fabric connectivity tests |
 | `analyze_validation_results.sh` | Parse validation logs |
 | `mpi-docker` | MPI+Docker wrapper (`--help` for usage) |

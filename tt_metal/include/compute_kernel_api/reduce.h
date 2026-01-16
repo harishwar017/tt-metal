@@ -70,9 +70,7 @@ ALWI void reduce_init(uint32_t icb, uint32_t icb_scaler, uint32_t ocb) {
 // clang-format on
 template <bool enforce_fp32_accumulation = false>
 ALWI void reduce_uninit(uint32_t icb = 0) {
-    if constexpr (enforce_fp32_accumulation) {
-        MATH((llk_math_reduce_uninit<enforce_fp32_accumulation>(icb)));
-    }
+    MATH((llk_math_reduce_uninit<enforce_fp32_accumulation>(icb)));
     PACK((llk_pack_reduce_mask_clear()));
 }
 

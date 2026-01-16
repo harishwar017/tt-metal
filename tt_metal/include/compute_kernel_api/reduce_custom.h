@@ -106,9 +106,7 @@ ALWI void reduce_block_max_row(uint32_t icb, uint32_t icb_scaler, uint32_t row_s
 // clang-format on
 template <bool clear_fp32_accumulation = false>
 ALWI void reduce_block_max_row_uninit(uint32_t icb = 0) {
-    if constexpr (clear_fp32_accumulation) {
-        MATH((llk_math_reduce_uninit<clear_fp32_accumulation>(icb)));
-    }
+    MATH((llk_math_reduce_uninit<clear_fp32_accumulation>(icb)));
     PACK((llk_pack_reduce_mask_clear()));
     UNPACK((llk_unpack_AB_reduce_block_max_row_uninit()));
 }

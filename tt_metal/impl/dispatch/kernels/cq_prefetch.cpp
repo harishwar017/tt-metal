@@ -245,7 +245,7 @@ CQRelayClient<fabric_mux_num_buffers_per_channel, fabric_mux_channel_buffer_size
     relay_client;
 
 // Feature to stall the prefetcher, mainly for ExecBuf impl which reuses CmdDataQ
-static enum StallState { STALL_NEXT = 2, STALLED = 1, NOT_STALLED = 0 } stall_state = NOT_STALLED;
+static enum StallState { STALL_NEXT = 2, /*STALLED = 1,*/ NOT_STALLED = 0 } stall_state = NOT_STALLED;
 
 static_assert((downstream_cb_base & (downstream_cb_page_size - 1)) == 0);
 
@@ -291,13 +291,13 @@ FORCE_INLINE void write_downstream(
 
 // If prefetcher must stall after this fetch, wait for data to come back, and move to stalled state.
 FORCE_INLINE void barrier_and_stall(uint32_t& pending_read_size, uint32_t& fence, uint32_t& cmd_ptr) {
-    noc_async_read_barrier();
+    // noc_async_read_barrier();
     if (fence < cmd_ptr) {
         cmd_ptr = fence;
     }
     fence += pending_read_size;
     pending_read_size = 0;
-    stall_state = STALLED;
+    // stall_state = STALLED;
 }
 
 template <uint32_t preamble_size>
@@ -307,49 +307,18 @@ FORCE_INLINE uint32_t read_from_pcie(
     uint32_t& pcie_read_ptr,
     uint32_t cmd_ptr,
     uint32_t size) {
+    static uint32_t transaction_id = 0U;
     uint32_t pending_read_size = 0;
     // Wrap cmddat_q
     if (fence + size + preamble_size > cmddat_q_end) {
-        // Only wrap if there are no commands ready, otherwise we'll leave some on the floor
-        // This ensures we don't overwrite unprocessed commands when wrapping
+        // only wrap if there are no commands ready, otherwise we'll leave some on the floor
+        // TODO: does this matter for perf?
         if (cmd_ptr != fence) {
-            // There are unprocessed commands in [cmd_ptr, fence)
-            // Safety check: ensure cmd_ptr is in valid range [cmddat_q_base, cmddat_q_end)
-            if (cmd_ptr < cmddat_q_base || cmd_ptr >= cmddat_q_end) {
-                // cmd_ptr is invalid or has wrapped incorrectly - be conservative
-                DPRINT << "read_from_pcie: REJECT wrap - invalid cmd_ptr=" << HEX() << cmd_ptr
-                       << " base=" << cmddat_q_base << " end=" << cmddat_q_end << ENDL();
-                return pending_read_size;
-            }
-
-            // Calculate available space from base to cmd_ptr
-            uint32_t available_space = cmd_ptr - cmddat_q_base;
-            uint32_t needed_space = size + preamble_size;
-            // The write will be [cmddat_q_base + preamble_size, cmddat_q_base + needed_space)
-            // So the write end is at: cmddat_q_base + needed_space
-            uint32_t write_end = cmddat_q_base + needed_space;
-
-            DPRINT << "read_from_pcie: checking wrap - cmd_ptr=" << HEX() << cmd_ptr << " fence=" << fence
-                   << " needed_space=" << needed_space << " available_space=" << available_space
-                   << " write_end=" << write_end << " base=" << cmddat_q_base << ENDL();
-
-            // We need enough space from base to cmd_ptr to fit the write
-            // The write will be [cmddat_q_base + preamble_size, cmddat_q_base + needed_space)
-            // So we need: cmddat_q_base + needed_space < cmd_ptr (strict inequality to avoid touching cmd_ptr)
-            // Which is: write_end < cmd_ptr
-            if (write_end >= cmd_ptr) {
-                // Not enough space - would overwrite or touch unprocessed commands at cmd_ptr
-                DPRINT << "read_from_pcie: REJECT wrap - insufficient space (write_end=" << HEX() << write_end
-                       << " >= cmd_ptr=" << cmd_ptr << ")" << ENDL();
-                return pending_read_size;
-            }
-            DPRINT << "read_from_pcie: ALLOW wrap - sufficient space available" << ENDL();
-        } else {
-            DPRINT << "read_from_pcie: ALLOW wrap - no unprocessed commands (cmd_ptr == fence)" << ENDL();
+            // No pending reads, since the location of fence cannot be moved due to unread commands
+            // in the cmddat_q -> reads cannot be issued to fill the queue.
+            return pending_read_size;
         }
-        // If cmd_ptr == fence, there are no unprocessed commands, so wrapping is always safe
         fence = cmddat_q_base;
-        DPRINT << "read_from_pcie: wrapped fence to base=" << cmddat_q_base << ENDL();
     }
 
     // Wrap pcie/hugepage
@@ -359,6 +328,7 @@ FORCE_INLINE uint32_t read_from_pcie(
 
     uint64_t host_src_addr = pcie_noc_xy | pcie_read_ptr;
     // DPRINT << "read_from_pcie: " << fence + preamble_size << " " << pcie_read_ptr << ENDL();
+    noc_async_read_set_trid(transaction_id++ % 16U);
     noc_async_read(host_src_addr, fence + preamble_size, size);
     pending_read_size = size + preamble_size;
     pcie_read_ptr += size;
@@ -405,10 +375,12 @@ void fetch_q_get_cmds(uint32_t& fence, uint32_t& cmd_ptr, uint32_t& pcie_read_pt
         (volatile tt_l1_ptr prefetch_q_entry_type*)prefetch_q_base;
     constexpr uint32_t prefetch_q_msb_mask = 1u << (sizeof(prefetch_q_entry_type) * CHAR_BIT - 1);
 
+    /*
     if (stall_state == STALLED) {
         ASSERT(pending_read_size == 0);  // Before stalling, fetch must have been completed.
         return;
     }
+    */
 
     // DPRINT << "fetch_q_get_cmds: " << cmd_ptr << " " << fence << ENDL();
     if (fence < cmd_ptr) {
@@ -420,7 +392,7 @@ void fetch_q_get_cmds(uint32_t& fence, uint32_t& cmd_ptr, uint32_t& pcie_read_pt
     uint32_t prefetch_q_rd_ptr_local = *prefetch_q_rd_ptr;
     uint32_t fetch_size = (prefetch_q_rd_ptr_local & ~prefetch_q_msb_mask) << prefetch_q_log_minsize;
     bool stall_flag = (prefetch_q_rd_ptr_local & prefetch_q_msb_mask) != 0;
-    stall_state = static_cast<StallState>(stall_flag << 1);  // NOT_STALLED -> STALL_NEXT if stall_flag is set
+    stall_state = static_cast<StallState>((stall_flag ? 1 : 0) << 1);  // NOT_STALLED -> STALL_NEXT if stall_flag is set
 
     if (fetch_size != 0 && pending_read_size == 0) {
         pending_read_size = read_from_pcie<preamble_size>(prefetch_q_rd_ptr, fence, pcie_read_ptr, cmd_ptr, fetch_size);
@@ -451,8 +423,8 @@ void fetch_q_get_cmds(uint32_t& fence, uint32_t& cmd_ptr, uint32_t& pcie_read_pt
 
             if (fetch_size != 0) {
                 stall_flag = (prefetch_q_rd_ptr_local & prefetch_q_msb_mask) != 0;
-                stall_state =
-                    static_cast<StallState>(stall_flag << 1);  // NOT_STALLED -> STALL_NEXT if stall_flag is set
+                stall_state = static_cast<StallState>(
+                    (stall_flag ? 1 : 0) << 1);  // NOT_STALLED -> STALL_NEXT if stall_flag is set
 
                 if (stall_state == STALL_NEXT) {
                     // If the prefetcher state reached here, it is issuing a read to the same "slot", since for exec_buf
@@ -1971,7 +1943,7 @@ void kernel_main_h() {
             (volatile CQPrefetchCmd tt_l1_ptr*)(cmd_ptr + sizeof(CQPrefetchHToPrefetchDHeader));
         uint32_t cmd_id = cmd->base.cmd_id;
         // Infer that an exec_buf command is to be executed based on the stall state.
-        bool is_exec_buf = (stall_state == STALLED);
+        bool is_exec_buf = false;  // (stall_state == STALLED);
         if (cmd_id == CQ_PREFETCH_CMD_RELAY_LINEAR_H) {
             cmd_ptr += process_relay_linear_h_cmd(cmd_ptr);
         } else {

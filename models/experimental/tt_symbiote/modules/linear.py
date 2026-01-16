@@ -10,6 +10,55 @@ from ttnn.model_preprocessing import preprocess_linear_bias, preprocess_linear_w
 import ttnn
 from models.experimental.tt_symbiote.core.module import TTNNModule, deallocate_weights_after
 
+import torch
+import numpy as np
+
+
+class LinearFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor = None) -> torch.Tensor:
+        # Convert to NumPy for computation
+        x_np = x.cpu().numpy()
+        weight_np = weight.cpu().numpy()
+
+        # Forward pass in NumPy
+        output_np = np.matmul(x_np, weight_np.T)
+        if bias is not None:
+            bias_np = bias.cpu().numpy()
+            output_np += bias_np
+
+        # Convert back to PyTorch tensor
+        return torch.from_numpy(output_np).to(device=x.device, dtype=x.dtype)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, weight, bias = inputs
+        ctx.save_for_backward(input, weight, bias)
+
+    @staticmethod
+    def backward(ctx, grad):
+        x, weight, bias = ctx.saved_tensors
+
+        # Convert to NumPy for gradient computation
+        grad_np = grad.cpu().numpy()
+        x_np = x.cpu().numpy()
+        weight_np = weight.cpu().numpy()
+
+        # Compute gradients in NumPy
+        grad_x_np = np.matmul(grad_np, weight_np)
+        grad_weight_np = np.matmul(grad_np.T, x_np)
+
+        # Convert back to PyTorch
+        grad_x = torch.from_numpy(grad_x_np).to(device=x.device, dtype=x.dtype)
+        grad_weight = torch.from_numpy(grad_weight_np).to(device=weight.device, dtype=weight.dtype)
+
+        grad_bias = None
+        if bias is not None:
+            grad_bias_np = np.sum(grad_np, axis=0)
+            grad_bias = torch.from_numpy(grad_bias_np).to(device=bias.device, dtype=bias.dtype)
+
+        return grad_x, grad_weight, grad_bias
+
 
 class TTNNLinear(TTNNModule):
     """TTNN-accelerated linear layer."""
@@ -32,6 +81,7 @@ class TTNNLinear(TTNNModule):
         )
         new_linear._fallback_torch_layer = linear
         new_linear.weight = linear.weight
+        new_linear.bias = linear.bias
         return new_linear
 
     @property
@@ -75,6 +125,16 @@ class TTNNLinear(TTNNModule):
         tt_output = ttnn.linear(input_tensor, self.tt_weight, bias=self.tt_bias, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         tt_output = ttnn.reshape(tt_output, input_tensor_shape[:-1] + [self.out_features])
         return tt_output
+
+
+class TTNNLinearTraining(TTNNLinear):
+    """TTNN Linear layer with training support."""
+
+    def forward(self, input_tensor):
+        output = LinearFunction.apply(input_tensor, self.torch_layer.weight, self.torch_layer.bias)
+        self._preprocessed_weight = False
+        self._weights_on_device = False
+        return output
 
 
 class TTNNLinearLLama(TTNNLinear):

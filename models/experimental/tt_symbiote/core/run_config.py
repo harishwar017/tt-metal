@@ -255,9 +255,13 @@ def to_ttnn_wrap(e):
 
 
 def set_device_wrap(device):
+    from models.experimental.tt_symbiote.core.tensor import TorchTTNNTensor
+
     def _set_device_wrap(e):
         if isinstance(e, ttnn.Tensor) and device is not None and e.device() != device:
             e = ttnn.to_device(e, device)
+        elif isinstance(e, TorchTTNNTensor) and e.ttnn_tensor is not None and e.ttnn_tensor.device() != device:
+            e.ttnn_tensor = ttnn.to_device(e.ttnn_tensor, device)
         return e
 
     return _set_device_wrap
@@ -300,6 +304,131 @@ def compose_transforms(*transforms):
         return result
 
     return _composed
+
+
+class TrainingRun:
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("This class cannot be instantiated")
+
+    @staticmethod
+    def new_instance(cls, elem, *args, **kwargs):
+        from models.experimental.tt_symbiote.core.tensor import TorchTTNNTensor
+
+        delete_elem = False
+        ttnn_tensor = None
+        if isinstance(elem, ttnn.Tensor):
+            ttnn_tensor = elem
+            elem = get_empty_torch_tensor_from_ttnn(ttnn_tensor, dtype=kwargs.get("dtype"))
+            delete_elem = True
+        elif isinstance(elem, torch.Tensor) and not isinstance(elem, TorchTTNNTensor):
+            if kwargs.get("dtype") is not None:
+                elem = elem.to(dtype=kwargs.get("dtype"))
+            if elem.device.type == "meta":
+                print("Warning: wrapping meta tensor. This will fail if conversion to TTNN tensor is attempted.")
+        output_shape = elem.size()
+        strides = elem.stride()
+        output_dtype = elem.dtype
+        requires_grad = elem.requires_grad
+        assert not isinstance(
+            elem, TorchTTNNTensor
+        ), "Wrapping a TorchTTNNTensor inside another TorchTTNNTensor. This is not allowed."
+        r = torch.Tensor._make_wrapper_subclass(  # type: ignore[attr-defined]
+            cls,
+            output_shape,
+            strides=strides,
+            storage_offset=0 if elem.device.type == "meta" else elem.storage_offset(),
+            dtype=output_dtype,
+            layout=elem.layout,
+            device="cpu",
+            requires_grad=requires_grad,
+        )
+        # ...the real tensor is held as an element on the tensor.
+        r.ttnn_tensor = ttnn_tensor  # Initialize ttnn_tensor
+        r.elem = elem if not delete_elem else None
+        assert isinstance(r.elem, torch.Tensor) or isinstance(
+            ttnn_tensor, ttnn.Tensor
+        ), f"elem must be a torch.Tensor (or None when ttnn.Tensor is defined), but got {type(r.elem)}"
+        return r
+
+    @staticmethod
+    def repr(self):
+        return (
+            f"TTNNTensor({self.ttnn_tensor.__repr__()})"
+            if self.ttnn_tensor is not None
+            else f"TorchTensor({self.elem.__repr__()})"
+        )
+
+    @staticmethod
+    def torch_dispatch(cls, func, types, args=(), kwargs=None):
+        """Dispatch torch operations to TTNN when possible."""
+        from models.experimental.tt_symbiote.core.dispatcher import can_dispatch_to_ttnn
+
+        if can_dispatch_to_ttnn(func.name(), args, kwargs):
+            rs = DispatchManager.dispatch_to_ttnn_wrapper(func, args, kwargs)
+        else:
+            rs = DispatchManager.dispatch_to_torch_wrapper(func, args, kwargs)
+        return rs
+
+    @staticmethod
+    def to_torch(self):
+        """Convert to PyTorch tensor."""
+
+        def _to_torch(self):
+            is_mesh_device = self.ttnn_tensor.device().__class__.__name__ == "MeshDevice"
+            is_mesh_device = is_mesh_device and self.ttnn_tensor.device().get_num_devices() != 1
+            if is_mesh_device:
+                result = to_torch_auto_compose(self.ttnn_tensor, device=self.ttnn_tensor.device())
+            else:
+                result = ttnn.to_torch(self.ttnn_tensor).to(self.device, self.dtype)
+            return result
+
+        result = self.elem
+        if self.ttnn_tensor is not None and self.elem is None:
+            result = _to_torch(self)
+        assert result is not None, "Both ttnn_tensor and elem are None. This should not happen."
+        if result.device.type == "meta" and self.ttnn_tensor is not None:
+            result = _to_torch(self)
+        self.elem = result if self.elem is None else self.elem
+        return self.elem
+
+    @staticmethod
+    def to_ttnn(self):
+        """Convert to TTNN tensor, creating if necessary."""
+        if self.ttnn_tensor is not None:
+            return self.ttnn_tensor
+        assert self.elem is not None, "Both ttnn_tensor and elem are None. This should not happen."
+        # convert elem to ttnn tensor here
+        is_mesh_device = self.device.__class__.__name__ == "MeshDevice"
+        if self.ttnn_distributed_config is None and is_mesh_device:
+            self.__dict__["distributed_config"] = DistributedTensorConfig(
+                mesh_mapper=ttnn.ReplicateTensorToMesh(self.device)
+            )
+        if self.elem.device.type == "meta":
+            raise RuntimeError(
+                "Cannot convert META tensor to TTNN tensor. Please ensure the tensor is on a real device before conversion."
+            )
+        if self.elem.dtype not in TORCH_TO_TTNN:
+            raise RuntimeError(f"Unsupported dtype {self.elem.dtype} for conversion to TTNN tensor.")
+        self.ttnn_tensor = ttnn.from_torch(
+            self.elem.cpu(),
+            dtype=torch_dtype_to_ttnn_dtype(self.elem.dtype),
+            mesh_mapper=self.ttnn_distributed_config.mesh_mapper if self.ttnn_distributed_config else None,
+            layout=ttnn.TILE_LAYOUT if self.dtype == torch.bool else None,
+        )
+        return self.ttnn_tensor
+
+    @staticmethod
+    def module_run(self, *args, **kwds):
+        print(f"{self.__class__.__name__}: {self.module_name} on device {self.device}")
+        assert self.device is not None, "Device must be set for TTNN module execution."
+        transform = compose_transforms(wrap_to_torch_ttnn_tensor, set_device_wrap(self.device))
+        func_args = tree_map(transform, args)
+        func_kwargs = tree_map(transform, kwds)
+        self.preprocess_weights()
+        self.move_weights_to_device()
+        result = self.forward(*func_args, **func_kwargs)
+        result = tree_map(wrap_to_torch_ttnn_tensor, result)
+        return result
 
 
 class NormalRun:
@@ -764,6 +893,7 @@ class CPU(NormalRun):
 
 # Add at module level
 _RUN_MODE_REGISTRY = {
+    "TRAINING": TrainingRun,
     "LIGHTWEIGHT": LightweightRun,
     "NORMAL": NormalRun,
     "NORMAL_WITH_FALLBACK": NormalRunWithFallback,

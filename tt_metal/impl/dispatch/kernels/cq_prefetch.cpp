@@ -307,8 +307,35 @@ FORCE_INLINE uint32_t read_from_pcie(
     uint32_t size) {
     static uint32_t transaction_id = 0U;
     uint32_t pending_read_size = 0;
+    uint32_t needed_space = size + preamble_size;
+
+    // Check if there's enough space in cmddat_q for the read
+    uint32_t available_space;
+    if (fence >= cmd_ptr) {
+        // Normal case: unprocessed commands in [cmd_ptr, fence)
+        // Available space is from fence to end (or to cmd_ptr if wrapping)
+        if (fence + needed_space <= cmddat_q_end) {
+            // Write doesn't wrap, available space is from fence to end
+            available_space = cmddat_q_end - fence;
+        } else {
+            // Write would wrap, available space is from base to cmd_ptr
+            available_space = cmd_ptr - cmddat_q_base;
+        }
+    } else {
+        // Wrapped case: fence wrapped to base but cmd_ptr hasn't wrapped yet
+        // Unprocessed commands in [cmd_ptr, cmddat_q_end) ∪ [cmddat_q_base, fence)
+        // Available space is from fence (at base) to cmd_ptr
+        available_space = cmd_ptr - fence;
+    }
+
+    // Ensure we don't overwrite unprocessed commands
+    if (needed_space > available_space) {
+        // Not enough space in circular queue
+        return pending_read_size;
+    }
+
     // Wrap cmddat_q
-    if (fence + size + preamble_size > cmddat_q_end) {
+    if (fence + needed_space > cmddat_q_end) {
         // only wrap if there are no commands ready, otherwise we'll leave some on the floor
         // TODO: does this matter for perf?
         if (cmd_ptr != fence) {
@@ -317,35 +344,6 @@ FORCE_INLINE uint32_t read_from_pcie(
             return pending_read_size;
         }
         fence = cmddat_q_base;
-    }
-
-    // Check if there's enough space in cmddat_q for the read
-    // After the wrap check above, fence may have been wrapped to cmddat_q_base
-    uint32_t needed_space = size + preamble_size;
-    uint32_t write_end = fence + needed_space;
-    uint32_t available_space;
-
-    if (cmd_ptr <= fence) {
-        // Normal case: unprocessed commands in [cmd_ptr, fence)
-        if (write_end <= cmddat_q_end) {
-            // Write doesn't wrap, available space is from fence to end
-            available_space = cmddat_q_end - fence;
-        } else {
-            // Write would wrap (fence was already set to cmddat_q_base above if wrapping was allowed)
-            // After wrap, available space is from base to cmd_ptr
-            // Note: if we wrapped above, we already verified cmd_ptr == fence, so cmd_ptr should be
-            // at or near cmddat_q_base, giving us the full buffer size
-            available_space = cmd_ptr - cmddat_q_base;
-        }
-    } else {
-        // Wrapped case: unprocessed commands in [cmd_ptr, cmddat_q_end) ∪ [cmddat_q_base, fence)
-        // Available space is from fence to cmd_ptr
-        available_space = cmd_ptr - fence;
-    }
-
-    if (needed_space > available_space) {
-        // Not enough space in circular queue
-        return pending_read_size;
     }
 
     // Wrap pcie/hugepage

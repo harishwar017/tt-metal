@@ -2,6 +2,8 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
+import torch
+
 import ttnn
 
 
@@ -47,6 +49,32 @@ class TT_CCL:
                 self.rs_semaphore_handles[i].append(
                     [ttnn.create_global_semaphore(self.mesh_device, self.sub_device_crs, 0) for _ in range(3)]
                 )
+
+        # Stats buffer for fused_rms_minimal - shared across all DistributedNorm instances
+        # Initialized lazily via init_decode_buffers() to avoid L1 conflicts with prefill
+        self.stats_buffer = None
+
+    def init_decode_buffers(self):
+        """Initialize L1 buffers needed for decode mode.
+        Must be called after prefill warmup but before decode trace capture."""
+        if self.stats_buffer is None:
+            # Match Galaxy implementation exactly: use list [] not set {} for CoreRangeSet
+            grid_offset = ttnn.CoreCoord(1, 0)
+            stats_mem_cfg = ttnn.create_sharded_memory_config(
+                shape=(32, 128),
+                core_grid=ttnn.CoreRangeSet([ttnn.CoreRange(grid_offset, grid_offset)]),  # List syntax like Galaxy
+                strategy=ttnn.ShardStrategy.WIDTH,
+                orientation=ttnn.ShardOrientation.ROW_MAJOR,
+                use_height_and_width_as_shard_shape=True,
+            )
+            self.stats_buffer = ttnn.from_torch(
+                torch.zeros((1, 1, 32, 128)),  # Match Galaxy: tuple for shape
+                device=self.mesh_device,
+                layout=ttnn.TILE_LAYOUT,
+                dtype=ttnn.bfloat16,
+                memory_config=stats_mem_cfg,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            )
 
     def get_and_cycle_barrier_semaphore_handle(self, cluster_axis=None):
         semaphore_index = 2 if not cluster_axis else cluster_axis
@@ -293,8 +321,15 @@ def tt_sharded_distributed_rmsnorm(
     ln_sharded_stats_memcfg,
     output_mem_config,
     use_fused_rms_norm=False,
+    stats_buffer=None,
+    cluster_axis=None,
 ):
-    cluster_axis = 1
+    # For distributed norm, we typically gather along the axis with multiple devices
+    # For P150x4 (1x4 mesh): cluster_axis=1 (gather along 4 columns)
+    # For TG (8x4 mesh): cluster_axis=1 (gather along 4 columns)
+    # This matches the Galaxy implementation
+    if cluster_axis is None:
+        cluster_axis = 1
     if not use_fused_rms_norm:
         inp = ttnn.to_memory_config(inp, memory_config=ln_sharded_input_memcfg)
 
@@ -339,6 +374,7 @@ def tt_sharded_distributed_rmsnorm(
             epsilon=epsilon,
             weight=gamma,
             memory_config=output_mem_config,
+            stats=stats_buffer,  # Pre-allocated stats buffer for intermediate all-gather
             use_noc1_only=False,
         )
     return tt_out

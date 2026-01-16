@@ -20,6 +20,7 @@ namespace ttnn::operations::normalization::layer_norm {
 struct LayerNormMultiCoreSharedVariables {
     tt::tt_metal::KernelHandle reader_kernel_id{};
     tt::tt_metal::KernelHandle writer_kernel_id{};
+    tt::tt_metal::KernelHandle compute_kernel_id{};
     uint32_t num_cores = 0;
     CoreCoord grid_size;
 };
@@ -28,13 +29,31 @@ struct LayerNormMultiCoreProgramFactory {
     using shared_variables_t = LayerNormMultiCoreSharedVariables;
     using cached_program_t = ttnn::device_operation::CachedProgram<shared_variables_t>;
 
+    // Original create() - creates a new program
     static cached_program_t create(
         const operation_attributes_t& operation_attributes,
         const tensor_args_t& tensor_args,
         tensor_return_value_t& tensor_return_value);
 
+    // Direct contribution: adds kernels/CBs to an existing program
+    // Used by ttnn::parallel for fusing multiple operations
+    static shared_variables_t add_to(
+        tt::tt_metal::Program& program,
+        const operation_attributes_t& operation_attributes,
+        const tensor_args_t& tensor_args,
+        tensor_return_value_t& tensor_return_value,
+        const std::optional<CoreRangeSet>& core_range_override = std::nullopt);
+
     static void override_runtime_arguments(
         cached_program_t& cached_program,
+        const operation_attributes_t& operation_attributes,
+        const tensor_args_t& tensor_args,
+        tensor_return_value_t& tensor_return_value);
+
+    // Override runtime args using shared_variables directly (for parallel composition)
+    static void override_runtime_arguments(
+        tt::tt_metal::Program& program,
+        shared_variables_t& shared_variables,
         const operation_attributes_t& operation_attributes,
         const tensor_args_t& tensor_args,
         tensor_return_value_t& tensor_return_value);

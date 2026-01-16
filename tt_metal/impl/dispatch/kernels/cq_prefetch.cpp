@@ -319,6 +319,35 @@ FORCE_INLINE uint32_t read_from_pcie(
         fence = cmddat_q_base;
     }
 
+    // Check if there's enough space in cmddat_q for the read
+    // After the wrap check above, fence may have been wrapped to cmddat_q_base
+    uint32_t needed_space = size + preamble_size;
+    uint32_t write_end = fence + needed_space;
+    uint32_t available_space;
+
+    if (cmd_ptr <= fence) {
+        // Normal case: unprocessed commands in [cmd_ptr, fence)
+        if (write_end <= cmddat_q_end) {
+            // Write doesn't wrap, available space is from fence to end
+            available_space = cmddat_q_end - fence;
+        } else {
+            // Write would wrap (fence was already set to cmddat_q_base above if wrapping was allowed)
+            // After wrap, available space is from base to cmd_ptr
+            // Note: if we wrapped above, we already verified cmd_ptr == fence, so cmd_ptr should be
+            // at or near cmddat_q_base, giving us the full buffer size
+            available_space = cmd_ptr - cmddat_q_base;
+        }
+    } else {
+        // Wrapped case: unprocessed commands in [cmd_ptr, cmddat_q_end) ∪ [cmddat_q_base, fence)
+        // Available space is from fence to cmd_ptr
+        available_space = cmd_ptr - fence;
+    }
+
+    if (needed_space > available_space) {
+        // Not enough space in circular queue
+        return pending_read_size;
+    }
+
     // Wrap pcie/hugepage
     if (pcie_read_ptr + size > pcie_base + pcie_size) {
         pcie_read_ptr = pcie_base;

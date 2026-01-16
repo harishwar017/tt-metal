@@ -35,7 +35,7 @@ ALWI void unary_op_init_common(uint32_t icb, uint32_t ocb) {
     PACK((llk_pack_init<p_pacr::PACK0>(ocb)));
 
     MATH((llk_math_eltwise_unary_datacopy_init<A2D, DST_ACCUM_MODE>(icb)));
-    MATH((llk_math_hw_configure<true /*math_implied_fmts*/, DST_ACCUM_MODE, false /*int32 dest*/>(icb, icb)));
+    MATH((llk_math_hw_configure<true /*math_implied_fmts*/, DST_ACCUM_MODE>(icb, icb)));
 #endif
 }
 

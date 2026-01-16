@@ -55,7 +55,8 @@ run_dual_galaxy_deepseekv3_tests_on_quad_galaxy() {
     local DEEPSEEK_V3_CACHE="/mnt/MLPerf/tt_dnn-models/deepseek-ai/DeepSeek-R1-0528-Cache/CI"
     local MESH_DEVICE="DUAL"
 
-    local TEST_CASE="pytest -svvv models/demos/deepseek_v3/tests"
+    # Skip unit tests until they support multi-host
+    local TEST_CASE="pytest -svvv models/demos/deepseek_v3/tests --ignore=models/demos/deepseek_v3/tests/unit"
 
     tt-run --rank-binding "$RANK_BINDING_YAML" \
         --mpi-args "--host $HOSTS --map-by rankfile:file=$RANKFILE --mca btl self,tcp --mca btl_tcp_if_include cnx1 --bind-to none --output-filename logs/mpi_job --tag-output" \

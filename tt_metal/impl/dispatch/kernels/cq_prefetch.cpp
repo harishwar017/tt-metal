@@ -245,7 +245,7 @@ CQRelayClient<fabric_mux_num_buffers_per_channel, fabric_mux_channel_buffer_size
     relay_client;
 
 // Feature to stall the prefetcher, mainly for ExecBuf impl which reuses CmdDataQ
-static enum StallState { STALL_NEXT = 2, /*STALLED = 1,*/ NOT_STALLED = 0 } stall_state = NOT_STALLED;
+static enum StallState { STALL_NEXT = 2, NOT_STALLED = 0 } stall_state = NOT_STALLED;
 
 static_assert((downstream_cb_base & (downstream_cb_page_size - 1)) == 0);
 
@@ -290,14 +290,12 @@ FORCE_INLINE void write_downstream(
 }
 
 // If prefetcher must stall after this fetch, wait for data to come back, and move to stalled state.
-FORCE_INLINE void barrier_and_stall(uint32_t& pending_read_size, uint32_t& fence, uint32_t& cmd_ptr) {
-    // noc_async_read_barrier();
+FORCE_INLINE void update_fetch_q_ptrs(uint32_t& pending_read_size, uint32_t& fence, uint32_t& cmd_ptr) {
     if (fence < cmd_ptr) {
         cmd_ptr = fence;
     }
     fence += pending_read_size;
     pending_read_size = 0;
-    // stall_state = STALLED;
 }
 
 template <uint32_t preamble_size>
@@ -375,17 +373,10 @@ void fetch_q_get_cmds(uint32_t& fence, uint32_t& cmd_ptr, uint32_t& pcie_read_pt
         (volatile tt_l1_ptr prefetch_q_entry_type*)prefetch_q_base;
     constexpr uint32_t prefetch_q_msb_mask = 1u << (sizeof(prefetch_q_entry_type) * CHAR_BIT - 1);
 
-    /*
-    if (stall_state == STALLED) {
-        ASSERT(pending_read_size == 0);  // Before stalling, fetch must have been completed.
-        return;
-    }
-    */
-
     // DPRINT << "fetch_q_get_cmds: " << cmd_ptr << " " << fence << ENDL();
-    if (fence < cmd_ptr) {
-        cmd_ptr = fence;
-    }
+    // if (fence < cmd_ptr) {
+    //    cmd_ptr = fence;
+    //}
 
     bool cmd_ready = (cmd_ptr != fence);
 
@@ -402,20 +393,14 @@ void fetch_q_get_cmds(uint32_t& fence, uint32_t& cmd_ptr, uint32_t& pcie_read_pt
             // exec_buf is the first command being fetched and should be offset
             // by preamble size. After ensuring that the exec_buf command has been read (barrier),
             // exit.
-            barrier_and_stall(pending_read_size, fence, cmd_ptr);  // STALL_NEXT -> STALLED
+            update_fetch_q_ptrs(pending_read_size, fence, cmd_ptr);  // STALL_NEXT -> STALLED
             return;
         }
     }
     if (!cmd_ready) {
         if (pending_read_size != 0) {
             noc_async_read_barrier();
-            // wrap the cmddat_q
-            if (fence < cmd_ptr) {
-                cmd_ptr = fence;
-            }
-
-            fence += pending_read_size;
-            pending_read_size = 0;
+            update_fetch_q_ptrs(pending_read_size, fence, cmd_ptr);
 
             // After the stall, re-check the host
             prefetch_q_rd_ptr_local = *prefetch_q_rd_ptr;
@@ -437,8 +422,7 @@ void fetch_q_get_cmds(uint32_t& fence, uint32_t& cmd_ptr, uint32_t& pcie_read_pt
                         // is at a wrapped location, and a read to it could not be issued, since there are existing
                         // commands in the cmddat_q. Only move the stall_state to stalled if the read to the cmd that
                         // initiated the stall was issued
-                        barrier_and_stall(
-                            pending_read_size, fence, cmd_ptr);  // STALL_NEXT -> STALLED
+                        update_fetch_q_ptrs(pending_read_size, fence, cmd_ptr);  // STALL_NEXT -> STALLED
                     }
                 } else {
                     pending_read_size = read_from_pcie<preamble_size>(
@@ -1942,12 +1926,10 @@ void kernel_main_h() {
         volatile CQPrefetchCmd tt_l1_ptr* cmd =
             (volatile CQPrefetchCmd tt_l1_ptr*)(cmd_ptr + sizeof(CQPrefetchHToPrefetchDHeader));
         uint32_t cmd_id = cmd->base.cmd_id;
-        // Infer that an exec_buf command is to be executed based on the stall state.
-        bool is_exec_buf = false;  // (stall_state == STALLED);
         if (cmd_id == CQ_PREFETCH_CMD_RELAY_LINEAR_H) {
             cmd_ptr += process_relay_linear_h_cmd(cmd_ptr);
         } else {
-            cmd_ptr = process_relay_inline_all(cmd_ptr, fence, is_exec_buf);
+            cmd_ptr = process_relay_inline_all(cmd_ptr, fence, false);
         }
 
         // Note: one fetch_q entry can contain multiple commands

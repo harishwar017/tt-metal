@@ -238,6 +238,9 @@ jobs:
           - name: fabric 2D fixture unit tests
             cmd: ./build/test/tt_metal/tt_fabric/fabric_unit_tests --gtest_filter="Fabric2D*Fixture.*"
             timeout: 15
+          - name: fabric traffic generator tests
+            cmd: ./build/test/tt_metal/tt_fabric/fabric_unit_tests --gtest_filter="FabricTrafficGeneratorKernelIntegrationTest.*"
+            timeout: 2
           - name: fabric system health tests
             cmd: ./build/test/tt_metal/tt_fabric/test_system_health
             timeout: 15

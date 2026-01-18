@@ -55,6 +55,7 @@
 #include "ttnn/operations/experimental/minimal_matmul/minimal_matmul_nanobind.hpp"
 #include "ttnn/operations/experimental/isin/isin_nanobind.hpp"
 #include "ttnn/operations/experimental/parallel/parallel_nanobind.hpp"
+#include "ttnn/operations/experimental/sequential/sequential_nanobind.hpp"
 
 namespace ttnn::operations::experimental {
 
@@ -130,6 +131,8 @@ void py_module(nb::module_& mod) {
     isin::detail::bind_isin_operation(mod);
 
     parallel::detail::bind_parallel_operation(mod);
+
+    sequential::detail::bind_sequential_operation(mod);
 }
 
 }  // namespace ttnn::operations::experimental

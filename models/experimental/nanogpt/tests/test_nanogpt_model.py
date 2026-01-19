@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
-
+# pytest models/experimental/nanogpt/tests/test_nanogpt_model.py
 # SPDX-License-Identifier: Apache-2.0
 
 import ttnn

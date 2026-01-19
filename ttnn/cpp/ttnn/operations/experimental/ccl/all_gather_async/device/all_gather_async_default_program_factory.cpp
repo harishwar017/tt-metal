@@ -7,6 +7,8 @@
 #include "ttnn/operations/ccl/sharding_addrgen_helper.hpp"
 #include "ttnn/operations/experimental/ccl/composite_common.hpp"
 #include <tt-metalium/tensor_accessor_args.hpp>
+#include <fstream>
+#include <chrono>
 
 namespace ttnn {
 
@@ -281,6 +283,15 @@ AllGatherProgramArtifacts build_all_gather_async_minimal_default_program_artifac
     const CoreCoord core_grid_offset,
     const bool reverse_order,
     const std::optional<CoreRangeSet>& sub_core_grid) {
+    // #region agent log - Entry point marker
+    {
+        std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+        log << "{\"location\":\"build_all_gather:ENTRY\",\"hypothesisId\":\"ENTRY\","
+            << "\"data\":{\"ring_size\":" << ring_size << ",\"ring_index\":" << ring_index
+            << "},\"timestamp\":" << std::chrono::system_clock::now().time_since_epoch().count() << "}\n";
+        log.flush();
+    }
+    // #endregion
     // Tensor Info
     const auto input_tensor_num_pages = input_tensor.buffer()->num_pages();
     const auto& input_tensor_shape = input_tensor.padded_shape();
@@ -348,6 +359,28 @@ AllGatherProgramArtifacts build_all_gather_async_minimal_default_program_artifac
     uint32_t page_size = input_tensor.buffer()->page_size();
     auto [num_targets_forward, num_targets_backward] =
         ccl::get_forward_backward_line_mcast_distance(ring_size, ring_index, topology, false);
+    // #region agent log - Hypothesis B,C,D,E: Log ring topology and multicast config
+    {
+        static int log_count = 0;
+        if (++log_count <= 10) {
+            std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+            log << "{\"location\":\"all_gather_factory:ring_config\",\"hypothesisId\":\"BCDE\","
+                << "\"data\":{\"ring_size\":" << ring_size << ",\"ring_index\":" << ring_index
+                << ",\"num_targets_forward\":" << num_targets_forward
+                << ",\"num_targets_backward\":" << num_targets_backward << ",\"sender_coord\":["
+                << sender_device_coord[0] << "," << sender_device_coord[1] << "]"
+                << ",\"forward_coord_valid\":" << (forward_coord.has_value() ? "true" : "false")
+                << ",\"backward_coord_valid\":" << (backward_coord.has_value() ? "true" : "false");
+            if (forward_coord) {
+                log << ",\"forward_coord\":[" << (*forward_coord)[0] << "," << (*forward_coord)[1] << "]";
+            }
+            if (backward_coord) {
+                log << ",\"backward_coord\":[" << (*backward_coord)[0] << "," << (*backward_coord)[1] << "]";
+            }
+            log << "},\"timestamp\":" << std::chrono::system_clock::now().time_since_epoch().count() << "}\n";
+        }
+    }
+    // #endregion
     auto [unicast_forward_args, unicast_backward_args] = ccl::get_forward_backward_line_unicast_configuration(
         topology, sender_device_coord, forward_coord, backward_coord, mesh_device);
     auto [barrier_mcast_forward_args, barrier_mcast_backward_args] = ccl::get_forward_backward_line_mcast_configuration(
@@ -355,9 +388,54 @@ AllGatherProgramArtifacts build_all_gather_async_minimal_default_program_artifac
         sender_device_coord,
         forward_coord,
         backward_coord,
-        topology == ccl::Topology::Linear ? num_targets_forward : ring_size - 1,
-        topology == ccl::Topology::Linear ? num_targets_backward : ring_size - 1,
+        num_targets_forward,
+        num_targets_backward,
         mesh_device);
+    // #region agent log - Hypothesis A: Log ALL barrier multicast args (including e/w/n/s hops for 2D)
+    {
+        static int log_count = 0;
+        if (++log_count <= 10) {
+            std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+            log << "{\"location\":\"all_gather_factory:barrier_mcast\",\"hypothesisId\":\"A\","
+                << "\"data\":{\"fwd\":[" << barrier_mcast_forward_args[0] << "," << barrier_mcast_forward_args[1] << ","
+                << barrier_mcast_forward_args[2] << "," << barrier_mcast_forward_args[3] << ","
+                << barrier_mcast_forward_args[4] << "," << barrier_mcast_forward_args[5] << "]"
+                << ",\"bwd\":[" << barrier_mcast_backward_args[0] << "," << barrier_mcast_backward_args[1] << ","
+                << barrier_mcast_backward_args[2] << "," << barrier_mcast_backward_args[3] << ","
+                << barrier_mcast_backward_args[4] << "," << barrier_mcast_backward_args[5] << "]"
+                << "},\"timestamp\":" << std::chrono::system_clock::now().time_since_epoch().count() << "}\n";
+        }
+    }
+    // #endregion
+
+    // #region agent log - Print routing config to stderr for visibility
+    {
+        static int print_count = 0;
+        if (++print_count <= 32) {
+            fprintf(
+                stderr,
+                "[ROUTING] chip_coord=[%u,%u] ring_idx=%u ring_size=%u "
+                "fwd_args=[start=%u,range=%u,e=%u,w=%u,n=%u,s=%u] "
+                "bwd_args=[start=%u,range=%u,e=%u,w=%u,n=%u,s=%u]\n",
+                (unsigned)sender_device_coord[0],
+                (unsigned)sender_device_coord[1],
+                ring_index,
+                ring_size,
+                barrier_mcast_forward_args[0],
+                barrier_mcast_forward_args[1],
+                barrier_mcast_forward_args[2],
+                barrier_mcast_forward_args[3],
+                barrier_mcast_forward_args[4],
+                barrier_mcast_forward_args[5],
+                barrier_mcast_backward_args[0],
+                barrier_mcast_backward_args[1],
+                barrier_mcast_backward_args[2],
+                barrier_mcast_backward_args[3],
+                barrier_mcast_backward_args[4],
+                barrier_mcast_backward_args[5]);
+        }
+    }
+    // #endregion
 
     TT_FATAL(
         !((topology == ccl::Topology::Linear) && fuse_op), "linear is not support when using fused for all-gather");

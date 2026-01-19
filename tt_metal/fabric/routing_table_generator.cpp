@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <tt-metalium/experimental/fabric/routing_table_generator.hpp>
+#include <tt-metalium/experimental/fabric/fabric.hpp>
 
 #include <enchantum/enchantum.hpp>
 #include <algorithm>
@@ -12,6 +13,8 @@
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
+#include <fstream>
+#include <chrono>
 
 #include <tt_stl/assert.hpp>
 #include <tt-logger/tt-logger.hpp>
@@ -98,39 +101,195 @@ void RoutingTableGenerator::generate_intramesh_routing_table(const IntraMeshConn
         return RoutingDirection::NONE;  // This line should never be reached
     };
     const auto& mesh_graph = topology_mapper_.get_mesh_graph();
+    // #region agent log - Log routing table generation with fabric config
+    {
+        auto fabric_config = tt::tt_fabric::GetFabricConfig();
+        bool is_1d = tt::tt_fabric::is_1d_fabric_config(fabric_config);
+        std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+        log << "{\"location\":\"routing_table_generator:generate_intramesh\",\"hypothesisId\":\"FABRIC_CONFIG\","
+            << "\"data\":{\"num_meshes\":" << this->intra_mesh_table_.size()
+            << ",\"fabric_config\":" << static_cast<int>(fabric_config)
+            << ",\"is_1d_fabric\":" << (is_1d ? "true" : "false")
+            << "},\"timestamp\":" << std::chrono::system_clock::now().time_since_epoch().count() << "}\n";
+    }
+    // #endregion
+    // #region agent log - Dump full intra_mesh_connectivity
+    {
+        std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+        const auto& intra_mesh_connectivity = mesh_graph.get_intra_mesh_connectivity();
+        for (std::uint32_t m = 0; m < intra_mesh_connectivity.size(); m++) {
+            for (std::uint32_t src = 0; src < intra_mesh_connectivity[m].size(); src++) {
+                for (const auto& [dst, edge] : intra_mesh_connectivity[m][src]) {
+                    const char* dir_str = "?";
+                    switch (edge.port_direction) {
+                        case RoutingDirection::N: dir_str = "N"; break;
+                        case RoutingDirection::E: dir_str = "E"; break;
+                        case RoutingDirection::S: dir_str = "S"; break;
+                        case RoutingDirection::W: dir_str = "W"; break;
+                        case RoutingDirection::Z: dir_str = "Z"; break;
+                        case RoutingDirection::C: dir_str = "C"; break;
+                        default: dir_str = "NONE"; break;
+                    }
+                    log << "{\"location\":\"connectivity\",\"mesh\":" << m << ",\"src\":" << src << ",\"dst\":" << dst
+                        << ",\"dir\":\"" << dir_str << "\"}\n";
+                }
+            }
+        }
+        log.flush();
+    }
+    // #endregion
+
+    // Check fabric config for logging
+    auto fabric_config = tt::tt_fabric::GetFabricConfig();
+    bool is_1d_fabric = tt::tt_fabric::is_1d_fabric_config(fabric_config);
+
     for (std::uint32_t mesh_id_val = 0; mesh_id_val < this->intra_mesh_table_.size(); mesh_id_val++) {
         MeshId mesh_id{mesh_id_val};
-        for (ChipId src_chip_id = 0; src_chip_id < this->intra_mesh_table_[mesh_id_val].size(); src_chip_id++) {
-            for (ChipId dst_chip_id = 0; dst_chip_id < this->intra_mesh_table_[mesh_id_val].size(); dst_chip_id++) {
-                auto src_mesh_coord = mesh_graph.chip_to_coordinate(mesh_id, src_chip_id);
-                auto dst_mesh_coord = mesh_graph.chip_to_coordinate(mesh_id, dst_chip_id);
-                // X first routing, traverse rows first
-                if (src_mesh_coord[0] != dst_mesh_coord[0]) {
-                    // If source and destination are in different rows, we need to move in the X direction first
-                    // Move North or South
-                    MeshCoordinate target_coord_on_column(dst_mesh_coord[0], src_mesh_coord[1]);
-                    auto target_chip_id = mesh_graph.coordinate_to_chip(mesh_id, target_coord_on_column);
-                    auto direction = get_shorter_direction_on_row_or_col(
-                        mesh_id_val, src_chip_id, target_chip_id, RoutingDirection::N, RoutingDirection::S);
-                    this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = direction;
-                    // TODO: today we are not updating the weight of the edge, should we use weight to balance
-                    //  routing traffic?
-                    //  intra_mesh_connectivity[mesh_id][src_chip_id][next_chip_id].weight += 1;
-                } else if (src_mesh_coord[1] != dst_mesh_coord[1]) {
-                    // Move East or West
-                    auto direction = get_shorter_direction_on_row_or_col(
-                        mesh_id_val, src_chip_id, dst_chip_id, RoutingDirection::E, RoutingDirection::W);
-                    this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = direction;
-                    // intra_mesh_connectivity[mesh_id][src_chip_id][next_chip_id].weight += 1;
+
+        // #region agent log - Log routing mode
+        {
+            std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+            log << "{\"location\":\"routing_table:mode\",\"hypothesisId\":\"ROUTE_MODE\","
+                << "\"data\":{\"mesh_id\":" << mesh_id_val << ",\"is_1d_fabric\":" << (is_1d_fabric ? "true" : "false")
+                << ",\"fabric_config\":" << static_cast<int>(fabric_config)
+                << "},\"timestamp\":" << std::chrono::system_clock::now().time_since_epoch().count() << "}\n";
+        }
+        // #endregion
+
+        uint32_t num_chips = this->intra_mesh_table_[mesh_id_val].size();
+
+        if (is_1d_fabric) {
+            // For 1D fabric (ring or linear): use LOGICAL E/W directions only
+            // E = forward in line/ring, W = backward in line/ring
+            // The line/ring path is a snake/zigzag through ALL chips (not just perimeter)
+            bool is_ring = (fabric_config == tt::tt_fabric::FabricConfig::FABRIC_1D_RING);
+
+            // Get mesh shape
+            MeshShape mesh_shape = mesh_graph.get_mesh_shape(mesh_id);
+            TT_FATAL(mesh_shape.dims() == 2, "1D fabric requires 2D mesh shape");
+            uint32_t num_rows = mesh_shape[0];
+            uint32_t num_cols = mesh_shape[1];
+
+            // Generate line coordinates using zigzag/snake pattern through ALL chips
+            // This matches the logic in MeshDeviceViewImpl::get_line_coordinates
+            std::vector<MeshCoordinate> line_coords;
+            line_coords.reserve(num_chips);
+
+            // Zigzag pattern: alternate direction on each row
+            for (uint32_t row = 0; row < num_rows; ++row) {
+                if (row % 2 == 0) {
+                    // Even rows: left to right
+                    for (uint32_t col = 0; col < num_cols; ++col) {
+                        line_coords.emplace_back(MeshCoordinate{row, col});
+                    }
                 } else {
-                    // No movement
-                    // TODO: what value do we put for this entry? If we pack table entries to 4 bits
-                    // any number is a valid port id. Do we assume FW will never try to access table entry to itself?
-                    this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = RoutingDirection::C;
+                    // Odd rows: right to left
+                    for (int col = static_cast<int>(num_cols - 1); col >= 0; --col) {
+                        line_coords.emplace_back(MeshCoordinate{row, static_cast<uint32_t>(col)});
+                    }
+                }
+            }
+
+            // Build chip_id -> line_index map
+            std::unordered_map<ChipId, size_t> chip_to_line_idx;
+            for (size_t i = 0; i < line_coords.size(); ++i) {
+                ChipId chip_id = mesh_graph.coordinate_to_chip(mesh_id, line_coords[i]);
+                chip_to_line_idx[chip_id] = i;
+            }
+            size_t line_size = line_coords.size();
+
+            for (ChipId src_chip_id = 0; src_chip_id < num_chips; src_chip_id++) {
+                auto src_it = chip_to_line_idx.find(src_chip_id);
+                if (src_it == chip_to_line_idx.end()) {
+                    continue;  // Shouldn't happen
+                }
+                size_t src_idx = src_it->second;
+
+                for (ChipId dst_chip_id = 0; dst_chip_id < num_chips; dst_chip_id++) {
+                    if (src_chip_id == dst_chip_id) {
+                        this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = RoutingDirection::C;
+                        continue;
+                    }
+
+                    auto dst_it = chip_to_line_idx.find(dst_chip_id);
+                    if (dst_it == chip_to_line_idx.end()) {
+                        continue;  // Shouldn't happen
+                    }
+                    size_t dst_idx = dst_it->second;
+
+                    // Calculate forward and backward distances along the LINE/RING ORDER
+                    size_t forward_dist, backward_dist;
+                    if (dst_idx >= src_idx) {
+                        forward_dist = dst_idx - src_idx;
+                        backward_dist = is_ring ? (line_size - dst_idx + src_idx) : line_size;
+                    } else {
+                        forward_dist = is_ring ? (line_size - src_idx + dst_idx) : line_size;
+                        backward_dist = src_idx - dst_idx;
+                    }
+
+                    // Choose shorter path - use LOGICAL direction E (forward) or W (backward)
+                    if (forward_dist <= backward_dist) {
+                        this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = RoutingDirection::E;
+                    } else {
+                        this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = RoutingDirection::W;
+                    }
+                }
+            }
+        } else {
+            // 2D fabric: use 2D X-first routing with physical N/S/E/W directions
+            for (ChipId src_chip_id = 0; src_chip_id < num_chips; src_chip_id++) {
+                for (ChipId dst_chip_id = 0; dst_chip_id < num_chips; dst_chip_id++) {
+                    auto src_mesh_coord = mesh_graph.chip_to_coordinate(mesh_id, src_chip_id);
+                    auto dst_mesh_coord = mesh_graph.chip_to_coordinate(mesh_id, dst_chip_id);
+                    // X first routing, traverse rows first
+                    if (src_mesh_coord[0] != dst_mesh_coord[0]) {
+                        // Move North or South
+                        MeshCoordinate target_coord_on_column(dst_mesh_coord[0], src_mesh_coord[1]);
+                        auto target_chip_id = mesh_graph.coordinate_to_chip(mesh_id, target_coord_on_column);
+                        auto direction = get_shorter_direction_on_row_or_col(
+                            mesh_id_val, src_chip_id, target_chip_id, RoutingDirection::N, RoutingDirection::S);
+                        this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = direction;
+                    } else if (src_mesh_coord[1] != dst_mesh_coord[1]) {
+                        // Move East or West
+                        auto direction = get_shorter_direction_on_row_or_col(
+                            mesh_id_val, src_chip_id, dst_chip_id, RoutingDirection::E, RoutingDirection::W);
+                        this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = direction;
+                    } else {
+                        // No movement
+                        this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = RoutingDirection::C;
+                    }
                 }
             }
         }
     }
+    // #region agent log - Dump full routing table
+    {
+        std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+        log << "{\"location\":\"routing_table_dump\",\"type\":\"start\"}\n";
+        for (std::uint32_t m = 0; m < this->intra_mesh_table_.size(); m++) {
+            for (ChipId src = 0; src < this->intra_mesh_table_[m].size(); src++) {
+                for (ChipId dst = 0; dst < this->intra_mesh_table_[m][src].size(); dst++) {
+                    auto dir = this->intra_mesh_table_[m][src][dst];
+                    const char* dir_str = "?";
+                    switch (dir) {
+                        case RoutingDirection::N: dir_str = "N"; break;
+                        case RoutingDirection::E: dir_str = "E"; break;
+                        case RoutingDirection::S: dir_str = "S"; break;
+                        case RoutingDirection::W: dir_str = "W"; break;
+                        case RoutingDirection::Z: dir_str = "Z"; break;
+                        case RoutingDirection::C: dir_str = "C"; break;
+                        default: dir_str = "NONE"; break;
+                    }
+                    if (src != dst) {  // Skip self-routes
+                        log << "{\"rt\":{\"src\":" << src << ",\"dst\":" << dst << ",\"dir\":\"" << dir_str << "\"}}\n";
+                    }
+                }
+            }
+        }
+        log << "{\"location\":\"routing_table_dump\",\"type\":\"end\"}\n";
+        log.flush();
+    }
+    // #endregion
 }
 
 // Shortest Path

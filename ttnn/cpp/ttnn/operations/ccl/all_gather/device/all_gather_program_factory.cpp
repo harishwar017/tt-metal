@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "all_gather_device_operation.hpp"
+#include <cstdio>
+#include <string>
 #include <tt-metalium/work_split.hpp>
 #include <unordered_map>
 #include "ttnn/tensor/tensor.hpp"

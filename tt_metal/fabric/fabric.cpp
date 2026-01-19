@@ -17,6 +17,7 @@
 #include "tt_metal/fabric/builder/fabric_static_sized_channels_allocator.hpp"
 #include <optional>
 #include <vector>
+#include <cstdio>
 
 #include "impl/context/metal_context.hpp"
 #include "impl/program/program_impl.hpp"
@@ -126,11 +127,9 @@ void append_fabric_connection_rt_args(
     if (is_2d_fabric) {
         forwarding_direction = control_plane.get_forwarding_direction(src_fabric_node_id, dst_fabric_node_id);
     } else {
-        // TODO: Workaround for #22524 routing tables not having wraparound links
-        // for 1D fabric, we loop to match the dst chip since we need to ensure src and dst are on the same line
-        // remove this once control plane has row/col info/view
+        // For 1D fabric, search all physical directions to find the link to the destination.
+        // The physical link direction is needed for eth channel selection.
         for (const auto& direction : FabricContext::routing_directions) {
-            // This assumes all neighbor chips to the dst mesh are the same
             auto neighbors = control_plane.get_chip_neighbors(src_fabric_node_id, direction);
             auto neighbor_mesh_chips = neighbors.find(dst_fabric_node_id.mesh_id);
             if (neighbor_mesh_chips == neighbors.end() ||
@@ -140,7 +139,6 @@ void append_fabric_connection_rt_args(
                      dst_fabric_node_id.chip_id) == neighbor_mesh_chips->second.end())) {
                 continue;
             }
-
             forwarding_direction = direction;
             break;
         }

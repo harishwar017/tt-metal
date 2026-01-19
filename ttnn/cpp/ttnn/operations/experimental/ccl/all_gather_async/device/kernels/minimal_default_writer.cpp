@@ -218,7 +218,7 @@ void kernel_main() {
                     0,  // ignore
                     static_cast<uint32_t>(1)});
 
-            if constexpr (topology == Topology::Linear) {
+            if constexpr (topology == Topology::Linear) {  //} || topology == Topology::Ring) {
                 // multicast to both the forward and backward worker on all devices that you write to.
                 // this only executes if the worker actually sends something over fabric (i.e. the writers
                 // on the end of the line pointing outward don't issue sem incs)

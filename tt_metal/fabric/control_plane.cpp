@@ -5,6 +5,7 @@
 #include <iostream>
 #include <enchantum/enchantum.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -509,6 +510,17 @@ void ControlPlane::init_control_plane(
 }
 
 void ControlPlane::init_control_plane_auto_discovery() {
+    // #region agent log - Log entry to auto discovery
+    fprintf(stderr, "[DEBUG] ControlPlane::init_control_plane_auto_discovery ENTRY\n");
+    fflush(stderr);
+    {
+        std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+        log << "{\"location\":\"control_plane:auto_discovery_entry\",\"hypothesisId\":\"D\","
+            << "\"data\":{\"msg\":\"entering_auto_discovery\"}"
+            << ",\"timestamp\":" << std::chrono::system_clock::now().time_since_epoch().count() << "}\n";
+        log.flush();
+    }
+    // #endregion
     auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
     const auto& driver = cluster.get_driver();
     const auto& distributed_context = tt_metal::distributed::multihost::DistributedContext::get_current_world();
@@ -531,6 +543,18 @@ void ControlPlane::init_control_plane_auto_discovery() {
     this->mesh_graph_ = std::make_unique<tt::tt_fabric::MeshGraph>(
         tt::tt_fabric::TopologyMapper::generate_mesh_graph_from_physical_system_descriptor(
             *this->physical_system_descriptor_, fabric_config));
+
+    // #region agent log - Log mesh graph shape after creation
+    {
+        auto mesh_shape = this->mesh_graph_->get_mesh_shape(MeshId{0});
+        std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+        log << "{\"location\":\"control_plane:mesh_graph_created\",\"hypothesisId\":\"D\","
+            << "\"data\":{\"mesh_shape\":[" << mesh_shape[0] << "," << mesh_shape[1] << "]"
+            << ",\"fabric_config\":\"" << enchantum::to_string(fabric_config) << "\"}"
+            << ",\"timestamp\":" << std::chrono::system_clock::now().time_since_epoch().count() << "}\n";
+        log.flush();
+    }
+    // #endregion
 
     this->local_mesh_binding_ = this->initialize_local_mesh_binding();
 
@@ -1013,6 +1037,22 @@ void ControlPlane::configure_routing_tables_for_fabric_ethernet_channels(
                     // If connected_chips_and_eth_cores contains physical_connected_chip_id then atleast one connection
                     // exists to physical_connected_chip_id
                     bool connections_exist = connected_chips_and_eth_cores.contains(physical_connected_chip_id);
+                    // #region agent log - Log missing eth connections
+                    if (!connections_exist) {
+                        static int missing_log_count = 0;
+                        if (++missing_log_count <= 20) {
+                            std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+                            log << "{\"location\":\"control_plane:missing_eth_conn\",\"hypothesisId\":\"H1\","
+                                << "\"data\":{\"mesh_id\":" << *mesh_id << ",\"fabric_chip_id\":" << fabric_chip_id
+                                << ",\"logical_connected_chip_id\":" << logical_connected_chip_id
+                                << ",\"physical_chip_id\":" << physical_chip_id
+                                << ",\"physical_connected_chip_id\":" << physical_connected_chip_id
+                                << ",\"direction\":\"" << enchantum::to_string(edge.port_direction) << "\""
+                                << "},\"timestamp\":" << std::chrono::system_clock::now().time_since_epoch().count()
+                                << "}\n";
+                        }
+                    }
+                    // #endregion
                     TT_FATAL(
                         connections_exist ||
                             reliability_mode != tt::tt_fabric::FabricReliabilityMode::STRICT_SYSTEM_HEALTH_SETUP_MODE,
@@ -1037,7 +1077,70 @@ void ControlPlane::configure_routing_tables_for_fabric_ethernet_channels(
                     for (const auto& eth_core : connected_eth_cores) {
                         // There could be an optimization here to create entry for both chips here, assuming links are
                         // bidirectional
-                        this->assign_direction_to_fabric_eth_core(fabric_node_id, eth_core, edge.port_direction);
+
+                        // For 1D fabric: map physical connections to LOGICAL E/W directions
+                        // E = forward in line/ring, W = backward in line/ring
+                        RoutingDirection assigned_direction = edge.port_direction;
+                        if (tt::tt_fabric::is_1d_fabric_config(fabric_config)) {
+                            bool is_ring = (fabric_config == tt::tt_fabric::FabricConfig::FABRIC_1D_RING);
+
+                            // Get mesh shape
+                            MeshShape mesh_shape = this->mesh_graph_->get_mesh_shape(mesh_id);
+                            TT_FATAL(mesh_shape.dims() == 2, "1D fabric requires 2D mesh shape");
+                            uint32_t num_rows = mesh_shape[0];
+                            uint32_t num_cols = mesh_shape[1];
+                            uint32_t total_chips = num_rows * num_cols;
+
+                            // Generate line coordinates using zigzag/snake pattern through ALL chips
+                            // This matches the logic used in routing_table_generator
+                            std::vector<MeshCoordinate> line_coords;
+                            line_coords.reserve(total_chips);
+                            for (uint32_t row = 0; row < num_rows; ++row) {
+                                if (row % 2 == 0) {
+                                    for (uint32_t col = 0; col < num_cols; ++col) {
+                                        line_coords.emplace_back(MeshCoordinate{row, col});
+                                    }
+                                } else {
+                                    for (int col = static_cast<int>(num_cols - 1); col >= 0; --col) {
+                                        line_coords.emplace_back(MeshCoordinate{row, static_cast<uint32_t>(col)});
+                                    }
+                                }
+                            }
+
+                            // Build chip_id -> line_index map
+                            std::unordered_map<ChipId, size_t> chip_to_line_idx;
+                            for (size_t i = 0; i < line_coords.size(); ++i) {
+                                ChipId chip_id = this->mesh_graph_->coordinate_to_chip(mesh_id, line_coords[i]);
+                                chip_to_line_idx[chip_id] = i;
+                            }
+
+                            // Find current chip's line index
+                            auto it = chip_to_line_idx.find(fabric_chip_id);
+                            if (it == chip_to_line_idx.end()) {
+                                this->assign_direction_to_fabric_eth_core(fabric_node_id, eth_core, assigned_direction);
+                                continue;
+                            }
+                            size_t line_idx = it->second;
+                            size_t line_size = line_coords.size();
+
+                            // Calculate next and previous chips in LINE/RING order
+                            size_t next_idx = (line_idx + 1) % line_size;
+                            size_t prev_idx = (line_idx + line_size - 1) % line_size;
+                            ChipId next_chip = this->mesh_graph_->coordinate_to_chip(mesh_id, line_coords[next_idx]);
+                            ChipId prev_chip = this->mesh_graph_->coordinate_to_chip(mesh_id, line_coords[prev_idx]);
+
+                            if (logical_connected_chip_id == next_chip) {
+                                assigned_direction = RoutingDirection::E;  // Forward in line/ring
+                            } else if (logical_connected_chip_id == prev_chip) {
+                                assigned_direction = RoutingDirection::W;  // Backward in line/ring
+                            } else if (!is_ring) {
+                                // For linear topology, only adjacent chips in the line
+                                continue;
+                            }
+                            // For ring and other physical connections, keep original direction
+                        }
+
+                        this->assign_direction_to_fabric_eth_core(fabric_node_id, eth_core, assigned_direction);
                     }
                 } else {
                     auto host_rank_for_chip =
@@ -1353,7 +1456,28 @@ std::optional<RoutingDirection> ControlPlane::get_forwarding_direction(
     } else if (src_chip_id != dst_chip_id) {
         const auto& intra_mesh_routing_table = this->routing_table_generator_->get_intra_mesh_table();
         if (intra_mesh_routing_table[*src_mesh_id][src_chip_id][dst_chip_id] != RoutingDirection::NONE) {
-            return intra_mesh_routing_table[*src_mesh_id][src_chip_id][dst_chip_id];
+            auto direction = intra_mesh_routing_table[*src_mesh_id][src_chip_id][dst_chip_id];
+            // #region agent log - Log forwarding direction lookup
+            {
+                static int fwd_log_count = 0;
+                if (++fwd_log_count <= 20) {
+                    const char* dir_str = "?";
+                    switch (direction) {
+                        case RoutingDirection::N: dir_str = "N"; break;
+                        case RoutingDirection::E: dir_str = "E"; break;
+                        case RoutingDirection::S: dir_str = "S"; break;
+                        case RoutingDirection::W: dir_str = "W"; break;
+                        default: dir_str = "OTHER"; break;
+                    }
+                    std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+                    log << "{\"location\":\"control_plane:get_forwarding_direction\",\"hypothesisId\":\"FWD_DIR\","
+                        << "\"data\":{\"src_chip\":" << src_chip_id << ",\"dst_chip\":" << dst_chip_id
+                        << ",\"direction\":\"" << dir_str << "\""
+                        << "},\"timestamp\":" << std::chrono::system_clock::now().time_since_epoch().count() << "}\n";
+                }
+            }
+            // #endregion
+            return direction;
         }
     }
     return std::nullopt;
@@ -1666,6 +1790,30 @@ void ControlPlane::write_routing_info_to_devices(MeshId mesh_id, ChipId chip_id)
                 : static_cast<std::uint8_t>(eth_chan_magic_values::INVALID_DIRECTION);
         routing_info.intra_mesh_direction_table.set_original_direction(dst_chip_id, direction_value);
     }
+
+    // #region agent log - Dump routing table per chip
+    {
+        static int rt_log_count = 0;
+        if (++rt_log_count <= 32) {
+            fprintf(stderr, "[RT] chip=%u routing_table: ", chip_id);
+            for (ChipId dst = 0; dst < router_intra_mesh_routing_table[*mesh_id][chip_id].size() && dst < 32; dst++) {
+                auto dir = router_intra_mesh_routing_table[*mesh_id][chip_id][dst];
+                const char* d = "?";
+                switch (dir) {
+                    case RoutingDirection::N: d = "N"; break;
+                    case RoutingDirection::E: d = "E"; break;
+                    case RoutingDirection::S: d = "S"; break;
+                    case RoutingDirection::W: d = "W"; break;
+                    case RoutingDirection::C: d = "C"; break;
+                    case RoutingDirection::NONE: d = "-"; break;
+                    default: d = "X"; break;
+                }
+                fprintf(stderr, "%s", d);
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+    // #endregion
 
     // Build inter-mesh routing entries (mesh-to-mesh routing)
     const auto& router_inter_mesh_routing_table = this->routing_table_generator_->get_inter_mesh_table();

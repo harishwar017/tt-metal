@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iomanip>
 #include <optional>
+#include <chrono>
 
 #include <tt_stl/assert.hpp>
 #include <tt-logger/tt-logger.hpp>
@@ -382,6 +383,17 @@ void MeshGraph::initialize_from_mgd(const MeshGraphDescriptor& mgd, std::optiona
         // Build connectivity using effective_fabric_type
         MeshCoordinateRange mesh_coord_range(mesh_shape);
         uint32_t mesh_size = mesh_shape[0] * mesh_shape[1];
+        // #region agent log - Log mesh shape used for connectivity
+        {
+            std::ofstream log("/localdev/snijjar/tt-metal/.cursor/debug.log", std::ios::app);
+            log << "{\"location\":\"mesh_graph:init_from_mgd\",\"hypothesisId\":\"C\","
+                << "\"data\":{\"mesh_id\":" << *mesh_id << ",\"mesh_shape\":[" << mesh_shape[0] << "," << mesh_shape[1]
+                << "]"
+                << ",\"mesh_size\":" << mesh_size << ",\"effective_fabric_type\":\""
+                << enchantum::to_string(effective_fabric_type) << "\""
+                << "},\"timestamp\":" << std::chrono::system_clock::now().time_since_epoch().count() << "}\n";
+        }
+        // #endregion
         this->intra_mesh_connectivity_[*mesh_id].resize(mesh_size);
         for (const auto& src_mesh_coord : mesh_coord_range) {
             ChipId src_chip_id = (src_mesh_coord[0] * mesh_shape[1]) + src_mesh_coord[1];

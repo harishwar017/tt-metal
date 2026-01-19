@@ -347,7 +347,15 @@ void DeviceManager::initialize_fabric_and_dispatch_fw() {
 
     if (has_flag(
             tt::tt_metal::MetalContext::instance().get_fabric_manager(), tt_fabric::FabricManagerMode::INIT_FABRIC)) {
+        // #region agent log - Before fabric router sync
+        fprintf(stderr, "[DEBUG] DeviceManager: BEFORE wait_for_fabric_router_sync\n");
+        fflush(stderr);
+        // #endregion
         this->wait_for_fabric_router_sync(DeviceManager::get_fabric_router_sync_timeout_ms());
+        // #region agent log - After fabric router sync
+        fprintf(stderr, "[DEBUG] DeviceManager: AFTER wait_for_fabric_router_sync\n");
+        fflush(stderr);
+        // #endregion
     }
     log_trace(tt::LogMetal, "Fabric and Dispatch Firmware initialized");
 }

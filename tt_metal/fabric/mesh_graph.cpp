@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <tt-metalium/experimental/fabric/mesh_graph.hpp>
+#include <tt-metalium/experimental/fabric/fabric.hpp>
 #include "experimental/fabric/routing_table_generator.hpp"
 #include "fabric_host_utils.hpp"
 #include <tt-metalium/experimental/fabric/topology_mapper_utils.hpp>
@@ -184,6 +185,7 @@ std::unordered_map<ChipId, RouterEdge> MeshGraph::get_valid_connections(
     std::unordered_map<ChipId, RouterEdge> valid_connections;
 
     MeshShape mesh_shape = mesh_coord_range.shape();
+
     MeshCoordinate N(src_mesh_coord[0] - 1, src_mesh_coord[1]);
     MeshCoordinate E(src_mesh_coord[0], src_mesh_coord[1] + 1);
     MeshCoordinate S(src_mesh_coord[0] + 1, src_mesh_coord[1]);
@@ -197,6 +199,10 @@ std::unordered_map<ChipId, RouterEdge> MeshGraph::get_valid_connections(
         N = MeshCoordinate((src_mesh_coord[0] - 1 + mesh_shape[0]) % mesh_shape[0], src_mesh_coord[1]);
         S = MeshCoordinate((src_mesh_coord[0] + 1) % mesh_shape[0], src_mesh_coord[1]);
     }
+
+    // Store ALL physical connections with their PHYSICAL directions (N/S/E/W)
+    // The translation to logical directions (E/W for 1D fabric) happens in the
+    // LogicalTopologyTranslator, not here. This layer represents hardware topology.
     for (const auto& [coord, direction] :
          {std::pair{N, RoutingDirection::N},
           std::pair{E, RoutingDirection::E},

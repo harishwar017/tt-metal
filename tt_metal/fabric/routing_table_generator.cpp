@@ -4,6 +4,7 @@
 
 #include <tt-metalium/experimental/fabric/routing_table_generator.hpp>
 #include <tt-metalium/experimental/fabric/fabric.hpp>
+#include <tt-metalium/experimental/fabric/logical_topology_translator.hpp>
 
 #include <enchantum/enchantum.hpp>
 #include <algorithm>
@@ -161,78 +162,15 @@ void RoutingTableGenerator::generate_intramesh_routing_table(const IntraMeshConn
         if (is_1d_fabric) {
             // For 1D fabric (ring or linear): use LOGICAL E/W directions only
             // E = forward in line/ring, W = backward in line/ring
-            // The line/ring path is a snake/zigzag through ALL chips (not just perimeter)
-            bool is_ring = (fabric_config == tt::tt_fabric::FabricConfig::FABRIC_1D_RING);
-
-            // Get mesh shape
+            // Use LogicalTopologyTranslator for consistent zigzag path computation
             MeshShape mesh_shape = mesh_graph.get_mesh_shape(mesh_id);
-            TT_FATAL(mesh_shape.dims() == 2, "1D fabric requires 2D mesh shape");
-            uint32_t num_rows = mesh_shape[0];
-            uint32_t num_cols = mesh_shape[1];
-
-            // Generate line coordinates using zigzag/snake pattern through ALL chips
-            // This matches the logic in MeshDeviceViewImpl::get_line_coordinates
-            std::vector<MeshCoordinate> line_coords;
-            line_coords.reserve(num_chips);
-
-            // Zigzag pattern: alternate direction on each row
-            for (uint32_t row = 0; row < num_rows; ++row) {
-                if (row % 2 == 0) {
-                    // Even rows: left to right
-                    for (uint32_t col = 0; col < num_cols; ++col) {
-                        line_coords.emplace_back(MeshCoordinate{row, col});
-                    }
-                } else {
-                    // Odd rows: right to left
-                    for (int col = static_cast<int>(num_cols - 1); col >= 0; --col) {
-                        line_coords.emplace_back(MeshCoordinate{row, static_cast<uint32_t>(col)});
-                    }
-                }
-            }
-
-            // Build chip_id -> line_index map
-            std::unordered_map<ChipId, size_t> chip_to_line_idx;
-            for (size_t i = 0; i < line_coords.size(); ++i) {
-                ChipId chip_id = mesh_graph.coordinate_to_chip(mesh_id, line_coords[i]);
-                chip_to_line_idx[chip_id] = i;
-            }
-            size_t line_size = line_coords.size();
+            LogicalTopologyTranslator translator(mesh_shape, fabric_config);
 
             for (ChipId src_chip_id = 0; src_chip_id < num_chips; src_chip_id++) {
-                auto src_it = chip_to_line_idx.find(src_chip_id);
-                if (src_it == chip_to_line_idx.end()) {
-                    continue;  // Shouldn't happen
-                }
-                size_t src_idx = src_it->second;
-
                 for (ChipId dst_chip_id = 0; dst_chip_id < num_chips; dst_chip_id++) {
-                    if (src_chip_id == dst_chip_id) {
-                        this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = RoutingDirection::C;
-                        continue;
-                    }
-
-                    auto dst_it = chip_to_line_idx.find(dst_chip_id);
-                    if (dst_it == chip_to_line_idx.end()) {
-                        continue;  // Shouldn't happen
-                    }
-                    size_t dst_idx = dst_it->second;
-
-                    // Calculate forward and backward distances along the LINE/RING ORDER
-                    size_t forward_dist, backward_dist;
-                    if (dst_idx >= src_idx) {
-                        forward_dist = dst_idx - src_idx;
-                        backward_dist = is_ring ? (line_size - dst_idx + src_idx) : line_size;
-                    } else {
-                        forward_dist = is_ring ? (line_size - src_idx + dst_idx) : line_size;
-                        backward_dist = src_idx - dst_idx;
-                    }
-
-                    // Choose shorter path - use LOGICAL direction E (forward) or W (backward)
-                    if (forward_dist <= backward_dist) {
-                        this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = RoutingDirection::E;
-                    } else {
-                        this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = RoutingDirection::W;
-                    }
+                    // Use the translator to get the logical routing direction
+                    RoutingDirection direction = translator.get_logical_routing_direction(src_chip_id, dst_chip_id);
+                    this->intra_mesh_table_[*mesh_id][src_chip_id][dst_chip_id] = direction;
                 }
             }
         } else {

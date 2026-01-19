@@ -38,6 +38,7 @@ target_sources(
         mesh_graph_descriptor.cpp
         routing_table_generator.cpp
         mesh_graph.cpp
+        logical_topology_translator.cpp
         erisc_datamover_builder.cpp
         fabric_router_channel_mapping.cpp
         fabric_router_builder.cpp

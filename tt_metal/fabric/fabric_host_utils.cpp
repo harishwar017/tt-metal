@@ -39,7 +39,10 @@ FabricType get_fabric_type(tt::tt_fabric::FabricConfig fabric_config) {
         case tt::tt_fabric::FabricConfig::FABRIC_1D_NEIGHBOR_EXCHANGE:
         case tt::tt_fabric::FabricConfig::FABRIC_1D_RING: {
             if (tt::tt_metal::MetalContext::instance().get_cluster().is_ubb_galaxy()) {
-                return FabricType::TORUS_XY;
+                // For 1D Ring on UBB Galaxy: use TORUS_Y to close the zigzag ring at the
+                // South-North seam (row 7 -> row 0). We don't use TORUS_XY because the
+                // East-West wrap-around creates connections that aren't part of the zigzag path.
+                return FabricType::TORUS_Y;
             }
             return FabricType::MESH;
         }

@@ -47,6 +47,7 @@
 #include <tt-logger/tt-logger.hpp>
 #include "mesh_coord.hpp"
 #include <tt-metalium/experimental/fabric/mesh_graph.hpp>
+#include <tt-metalium/experimental/fabric/logical_topology_translator.hpp>
 #include "llrt/metal_soc_descriptor.hpp"
 #include <tt-metalium/experimental/fabric/routing_table_generator.hpp>
 #include <umd/device/types/core_coordinates.hpp>
@@ -626,13 +627,14 @@ void ControlPlane::load_physical_chip_mapping(
 
 void ControlPlane::validate_mesh_connections(MeshId mesh_id) const {
     MeshShape mesh_shape = mesh_graph_->get_mesh_shape(mesh_id);
-    auto get_physical_chip_id = [&](const MeshCoordinate& mesh_coord) {
-        auto fabric_chip_id = this->mesh_graph_->coordinate_to_chip(mesh_id, mesh_coord);
-        return logical_mesh_chip_id_to_physical_chip_id_mapping_.at(FabricNodeId(mesh_id, fabric_chip_id));
+
+    auto get_physical_chip_id_from_logical = [&](ChipId logical_chip_id) {
+        return logical_mesh_chip_id_to_physical_chip_id_mapping_.at(FabricNodeId(mesh_id, logical_chip_id));
     };
-    auto validate_chip_connections = [&](const MeshCoordinate& mesh_coord, const MeshCoordinate& other_mesh_coord) {
-        ChipId physical_chip_id = get_physical_chip_id(mesh_coord);
-        ChipId physical_chip_id_other = get_physical_chip_id(other_mesh_coord);
+
+    auto validate_chip_connections = [&](ChipId logical_chip_id, ChipId logical_other_chip_id) {
+        ChipId physical_chip_id = get_physical_chip_id_from_logical(logical_chip_id);
+        ChipId physical_chip_id_other = get_physical_chip_id_from_logical(logical_other_chip_id);
         auto eth_links = get_ethernet_cores_grouped_by_connected_chips(physical_chip_id);
         auto eth_links_to_other = eth_links.find(physical_chip_id_other);
         TT_FATAL(
@@ -641,18 +643,55 @@ void ControlPlane::validate_mesh_connections(MeshId mesh_id) const {
             physical_chip_id,
             physical_chip_id_other);
     };
-    const auto& mesh_coord_range = this->get_coord_range(mesh_id, MeshScope::LOCAL);
-    for (const auto& mesh_coord : mesh_coord_range) {
-        auto mode = mesh_coord_range.get_boundary_mode();
 
-        auto col_neighbor = mesh_coord.get_neighbor(mesh_shape, 1, 1, mode);
-        auto row_neighbor = mesh_coord.get_neighbor(mesh_shape, 1, 0, mode);
+    auto fabric_config = GetFabricConfig();
+    bool is_1d = is_1d_fabric_config(fabric_config);
 
-        if (col_neighbor.has_value() && mesh_coord_range.contains(*col_neighbor)) {
-            validate_chip_connections(mesh_coord, *col_neighbor);
+    if (is_1d) {
+        // For 1D fabric: only validate connections between adjacent chips in the logical 1D path
+        LogicalTopologyTranslator translator(mesh_shape, fabric_config);
+
+        for (size_t i = 0; i < translator.get_num_chips(); ++i) {
+            ChipId src_chip = translator.get_chip_id_from_line_index(i);
+
+            // Validate connection to next chip in line (E neighbor)
+            auto east_neighbor = translator.get_logical_neighbor(src_chip, RoutingDirection::E);
+            if (east_neighbor.has_value()) {
+                validate_chip_connections(src_chip, east_neighbor.value());
+            }
+            // W neighbor validation is redundant (covered when validating the other chip's E)
         }
-        if (row_neighbor.has_value() && mesh_coord_range.contains(*row_neighbor)) {
-            validate_chip_connections(mesh_coord, *row_neighbor);
+    } else {
+        // For 2D fabric: validate all physical N/S/E/W neighbors
+        auto get_physical_chip_id = [&](const MeshCoordinate& mesh_coord) {
+            auto fabric_chip_id = this->mesh_graph_->coordinate_to_chip(mesh_id, mesh_coord);
+            return logical_mesh_chip_id_to_physical_chip_id_mapping_.at(FabricNodeId(mesh_id, fabric_chip_id));
+        };
+        auto validate_chip_connections_2d = [&](const MeshCoordinate& mesh_coord,
+                                                const MeshCoordinate& other_mesh_coord) {
+            ChipId physical_chip_id = get_physical_chip_id(mesh_coord);
+            ChipId physical_chip_id_other = get_physical_chip_id(other_mesh_coord);
+            auto eth_links = get_ethernet_cores_grouped_by_connected_chips(physical_chip_id);
+            auto eth_links_to_other = eth_links.find(physical_chip_id_other);
+            TT_FATAL(
+                eth_links_to_other != eth_links.end(),
+                "Chip {} not connected to chip {}",
+                physical_chip_id,
+                physical_chip_id_other);
+        };
+        const auto& mesh_coord_range = this->get_coord_range(mesh_id, MeshScope::LOCAL);
+        for (const auto& mesh_coord : mesh_coord_range) {
+            auto mode = mesh_coord_range.get_boundary_mode();
+
+            auto col_neighbor = mesh_coord.get_neighbor(mesh_shape, 1, 1, mode);
+            auto row_neighbor = mesh_coord.get_neighbor(mesh_shape, 1, 0, mode);
+
+            if (col_neighbor.has_value() && mesh_coord_range.contains(*col_neighbor)) {
+                validate_chip_connections_2d(mesh_coord, *col_neighbor);
+            }
+            if (row_neighbor.has_value() && mesh_coord_range.contains(*row_neighbor)) {
+                validate_chip_connections_2d(mesh_coord, *row_neighbor);
+            }
         }
     }
 }
@@ -1016,7 +1055,23 @@ void ControlPlane::configure_routing_tables_for_fabric_ethernet_channels(
             auto physical_chip_id = this->get_physical_chip_id_from_fabric_node_id(fabric_node_id);
             auto asic_id = this->topology_mapper_->get_asic_id_from_fabric_node_id(fabric_node_id);
 
+            // For 1D fabric: pre-compute the logical neighbors using translator
+            std::optional<LogicalTopologyTranslator> translator_opt;
+            if (is_1d_fabric_config(fabric_config)) {
+                translator_opt.emplace(this->mesh_graph_->get_mesh_shape(mesh_id), fabric_config);
+            }
+
             for (const auto& [logical_connected_chip_id, edge] : intra_mesh_connectivity[*mesh_id][fabric_chip_id]) {
+                // For 1D fabric: skip connections that are not part of the logical 1D path BEFORE any validation
+                if (is_1d_fabric_config(fabric_config) && translator_opt.has_value()) {
+                    RoutingDirection logical_dir = translator_opt->physical_to_logical_direction(
+                        fabric_chip_id, logical_connected_chip_id, edge.port_direction);
+                    if (logical_dir == RoutingDirection::NONE) {
+                        // This physical connection is NOT part of the logical 1D path - skip entirely
+                        continue;
+                    }
+                }
+
                 auto connected_mesh_coord = this->mesh_graph_->chip_to_coordinate(mesh_id, logical_connected_chip_id);
                 if (local_mesh_coord_range.contains(connected_mesh_coord)) {
                     // This is a local chip, so we can use the logical chip id directly
@@ -1078,66 +1133,13 @@ void ControlPlane::configure_routing_tables_for_fabric_ethernet_channels(
                         // There could be an optimization here to create entry for both chips here, assuming links are
                         // bidirectional
 
-                        // For 1D fabric: map physical connections to LOGICAL E/W directions
-                        // E = forward in line/ring, W = backward in line/ring
+                        // For 1D fabric: use the logical direction from the translator (already filtered above)
+                        // For 2D fabric: use the physical direction from the edge
                         RoutingDirection assigned_direction = edge.port_direction;
-                        if (tt::tt_fabric::is_1d_fabric_config(fabric_config)) {
-                            bool is_ring = (fabric_config == tt::tt_fabric::FabricConfig::FABRIC_1D_RING);
-
-                            // Get mesh shape
-                            MeshShape mesh_shape = this->mesh_graph_->get_mesh_shape(mesh_id);
-                            TT_FATAL(mesh_shape.dims() == 2, "1D fabric requires 2D mesh shape");
-                            uint32_t num_rows = mesh_shape[0];
-                            uint32_t num_cols = mesh_shape[1];
-                            uint32_t total_chips = num_rows * num_cols;
-
-                            // Generate line coordinates using zigzag/snake pattern through ALL chips
-                            // This matches the logic used in routing_table_generator
-                            std::vector<MeshCoordinate> line_coords;
-                            line_coords.reserve(total_chips);
-                            for (uint32_t row = 0; row < num_rows; ++row) {
-                                if (row % 2 == 0) {
-                                    for (uint32_t col = 0; col < num_cols; ++col) {
-                                        line_coords.emplace_back(MeshCoordinate{row, col});
-                                    }
-                                } else {
-                                    for (int col = static_cast<int>(num_cols - 1); col >= 0; --col) {
-                                        line_coords.emplace_back(MeshCoordinate{row, static_cast<uint32_t>(col)});
-                                    }
-                                }
-                            }
-
-                            // Build chip_id -> line_index map
-                            std::unordered_map<ChipId, size_t> chip_to_line_idx;
-                            for (size_t i = 0; i < line_coords.size(); ++i) {
-                                ChipId chip_id = this->mesh_graph_->coordinate_to_chip(mesh_id, line_coords[i]);
-                                chip_to_line_idx[chip_id] = i;
-                            }
-
-                            // Find current chip's line index
-                            auto it = chip_to_line_idx.find(fabric_chip_id);
-                            if (it == chip_to_line_idx.end()) {
-                                this->assign_direction_to_fabric_eth_core(fabric_node_id, eth_core, assigned_direction);
-                                continue;
-                            }
-                            size_t line_idx = it->second;
-                            size_t line_size = line_coords.size();
-
-                            // Calculate next and previous chips in LINE/RING order
-                            size_t next_idx = (line_idx + 1) % line_size;
-                            size_t prev_idx = (line_idx + line_size - 1) % line_size;
-                            ChipId next_chip = this->mesh_graph_->coordinate_to_chip(mesh_id, line_coords[next_idx]);
-                            ChipId prev_chip = this->mesh_graph_->coordinate_to_chip(mesh_id, line_coords[prev_idx]);
-
-                            if (logical_connected_chip_id == next_chip) {
-                                assigned_direction = RoutingDirection::E;  // Forward in line/ring
-                            } else if (logical_connected_chip_id == prev_chip) {
-                                assigned_direction = RoutingDirection::W;  // Backward in line/ring
-                            } else if (!is_ring) {
-                                // For linear topology, only adjacent chips in the line
-                                continue;
-                            }
-                            // For ring and other physical connections, keep original direction
+                        if (is_1d_fabric_config(fabric_config) && translator_opt.has_value()) {
+                            // We already filtered out non-logical connections above, so this must be E or W
+                            assigned_direction = translator_opt->physical_to_logical_direction(
+                                fabric_chip_id, logical_connected_chip_id, edge.port_direction);
                         }
 
                         this->assign_direction_to_fabric_eth_core(fabric_node_id, eth_core, assigned_direction);
@@ -1243,27 +1245,77 @@ std::pair<FabricNodeId, chan_id_t> ControlPlane::get_connected_mesh_chip_chan_id
         }
     }
 
+    // For 1D fabric: port_direction is LOGICAL (E/W), but intra_mesh_connectivity stores PHYSICAL directions.
+    // We need to find the chip that is logically connected in the given direction.
+    auto fabric_config = tt::tt_fabric::GetFabricConfig();
+    bool is_1d_fabric = tt::tt_fabric::is_1d_fabric_config(fabric_config);
+
     // Try to find the connected mesh chip chan ids for the given port direction in intra mesh connectivity
     const auto& intra_mesh_node = intra_mesh_connectivity[*fabric_node_id.mesh_id][fabric_node_id.chip_id];
-    for (const auto& [dst_fabric_chip_id, edge] : intra_mesh_node) {
-        if (edge.port_direction == port_direction) {
-            // Get reverse port direction
-            TT_ASSERT(
-                intra_mesh_connectivity[*fabric_node_id.mesh_id][dst_fabric_chip_id].contains(fabric_node_id.chip_id),
-                "Intra mesh connectivity from {} to {} not found",
-                dst_fabric_chip_id,
-                fabric_node_id.chip_id);
-            RoutingDirection reverse_port_direction =
-                intra_mesh_connectivity[*fabric_node_id.mesh_id][dst_fabric_chip_id]
-                    .at(fabric_node_id.chip_id)
-                    .port_direction;
-            // Find the eth chan on connected dst_fabric_chip_id based on routing_plane_id
-            const auto& dst_fabric_node = FabricNodeId(fabric_node_id.mesh_id, dst_fabric_chip_id);
-            const auto& dst_fabric_chip_eth_chans =
-                this->router_port_directions_to_physical_eth_chan_map_.at(dst_fabric_node);
-            for (const auto& [direction, eth_chans] : dst_fabric_chip_eth_chans) {
-                if (direction == reverse_port_direction) {
-                    return std::make_pair(dst_fabric_node, eth_chans[routing_plane_id]);
+
+    if (is_1d_fabric) {
+        // For 1D fabric: port_direction is logical E (next) or W (prev)
+        // We need to find the logical neighbor, regardless of physical direction
+        MeshShape mesh_shape = this->mesh_graph_->get_mesh_shape(fabric_node_id.mesh_id);
+        LogicalTopologyTranslator translator(mesh_shape, fabric_config);
+
+        std::optional<ChipId> target_chip;
+        if (port_direction == RoutingDirection::E || port_direction == RoutingDirection::W) {
+            target_chip = translator.get_logical_neighbor(fabric_node_id.chip_id, port_direction);
+        }
+
+        if (target_chip.has_value()) {
+            // Find this chip in intra_mesh_connectivity and get its physical edge
+            for (const auto& [dst_fabric_chip_id, edge] : intra_mesh_node) {
+                if (dst_fabric_chip_id == *target_chip) {
+                    // Found the physical connection to the logical neighbor
+                    TT_ASSERT(
+                        intra_mesh_connectivity[*fabric_node_id.mesh_id][dst_fabric_chip_id].contains(
+                            fabric_node_id.chip_id),
+                        "Intra mesh connectivity from {} to {} not found",
+                        dst_fabric_chip_id,
+                        fabric_node_id.chip_id);
+
+                    // The reverse direction on the destination chip is also logical (E or W)
+                    // For logical E (next), reverse is W (prev); for logical W (prev), reverse is E (next)
+                    RoutingDirection reverse_logical_direction =
+                        (port_direction == RoutingDirection::E) ? RoutingDirection::W : RoutingDirection::E;
+
+                    // Find the eth chan on connected dst_fabric_chip_id with the reverse logical direction
+                    const auto& dst_fabric_node = FabricNodeId(fabric_node_id.mesh_id, dst_fabric_chip_id);
+                    const auto& dst_fabric_chip_eth_chans =
+                        this->router_port_directions_to_physical_eth_chan_map_.at(dst_fabric_node);
+                    for (const auto& [direction, eth_chans] : dst_fabric_chip_eth_chans) {
+                        if (direction == reverse_logical_direction) {
+                            return std::make_pair(dst_fabric_node, eth_chans[routing_plane_id]);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // For 2D fabric: port_direction is physical, match directly
+        for (const auto& [dst_fabric_chip_id, edge] : intra_mesh_node) {
+            if (edge.port_direction == port_direction) {
+                // Get reverse port direction
+                TT_ASSERT(
+                    intra_mesh_connectivity[*fabric_node_id.mesh_id][dst_fabric_chip_id].contains(
+                        fabric_node_id.chip_id),
+                    "Intra mesh connectivity from {} to {} not found",
+                    dst_fabric_chip_id,
+                    fabric_node_id.chip_id);
+                RoutingDirection reverse_port_direction =
+                    intra_mesh_connectivity[*fabric_node_id.mesh_id][dst_fabric_chip_id]
+                        .at(fabric_node_id.chip_id)
+                        .port_direction;
+                // Find the eth chan on connected dst_fabric_chip_id based on routing_plane_id
+                const auto& dst_fabric_node = FabricNodeId(fabric_node_id.mesh_id, dst_fabric_chip_id);
+                const auto& dst_fabric_chip_eth_chans =
+                    this->router_port_directions_to_physical_eth_chan_map_.at(dst_fabric_node);
+                for (const auto& [direction, eth_chans] : dst_fabric_chip_eth_chans) {
+                    if (direction == reverse_port_direction) {
+                        return std::make_pair(dst_fabric_node, eth_chans[routing_plane_id]);
+                    }
                 }
             }
         }
@@ -1511,6 +1563,30 @@ std::vector<chan_id_t> ControlPlane::get_forwarding_eth_chans_to_chip(
 
 stl::Span<const ChipId> ControlPlane::get_intra_chip_neighbors(
     FabricNodeId src_fabric_node_id, RoutingDirection routing_direction) const {
+    auto fabric_config = tt::tt_fabric::GetFabricConfig();
+    bool is_1d_fabric = tt::tt_fabric::is_1d_fabric_config(fabric_config);
+
+    if (is_1d_fabric && (routing_direction == RoutingDirection::E || routing_direction == RoutingDirection::W)) {
+        // For 1D fabric: routing_direction is LOGICAL (E = next in line, W = prev in line)
+        // We need to find the logical neighbor, not the physical neighbor in that direction
+        MeshShape mesh_shape = this->mesh_graph_->get_mesh_shape(src_fabric_node_id.mesh_id);
+        LogicalTopologyTranslator translator(mesh_shape, fabric_config);
+
+        auto logical_neighbor = translator.get_logical_neighbor(src_fabric_node_id.chip_id, routing_direction);
+        if (logical_neighbor.has_value()) {
+            // Find this neighbor in the connectivity map and return its connected_chip_ids
+            for (const auto& [neighbor_chip_id, routing_edge] :
+                 this->mesh_graph_
+                     ->get_intra_mesh_connectivity()[*src_fabric_node_id.mesh_id][src_fabric_node_id.chip_id]) {
+                if (neighbor_chip_id == *logical_neighbor) {
+                    return routing_edge.connected_chip_ids;
+                }
+            }
+        }
+        return {};
+    }
+
+    // For 2D fabric or non-E/W directions: use physical direction lookup
     for (const auto& [_, routing_edge] :
          this->mesh_graph_->get_intra_mesh_connectivity()[*src_fabric_node_id.mesh_id][src_fabric_node_id.chip_id]) {
         if (routing_edge.port_direction == routing_direction) {

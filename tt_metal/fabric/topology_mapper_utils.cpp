@@ -13,6 +13,8 @@
 #include <tt-logger/tt-logger.hpp>
 #include <fmt/format.h>
 #include <tt-metalium/experimental/fabric/mesh_graph.hpp>
+#include <tt-metalium/experimental/fabric/fabric.hpp>
+#include <tt-metalium/experimental/fabric/logical_topology_translator.hpp>
 #include "tt_metal/fabric/physical_system_descriptor.hpp"
 #include "tt_metal/impl/context/metal_context.hpp"
 #include <llrt/tt_cluster.hpp>
@@ -928,31 +930,63 @@ TopologyMappingResult map_mesh_to_physical(
 std::map<MeshId, LogicalAdjacencyMap> build_adjacency_map_logical(const ::tt::tt_fabric::MeshGraph& mesh_graph) {
     std::map<MeshId, LogicalAdjacencyMap> adjacency_map;
 
-    auto get_local_adjacents = [&](FabricNodeId fabric_node_id, MeshId mesh_id) {
-        auto adjacent_map = mesh_graph.get_intra_mesh_connectivity()[*mesh_id][fabric_node_id.chip_id];
-
-        std::vector<FabricNodeId> adjacents;
-        bool relaxed = mesh_graph.is_intra_mesh_policy_relaxed(mesh_id);
-        for (const auto& [neighbor_chip_id, edge] : adjacent_map) {
-            // Skip self-connections
-            if (neighbor_chip_id == fabric_node_id.chip_id) {
-                continue;
-            }
-            size_t repeat_count = relaxed ? 1 : edge.connected_chip_ids.size();
-            for (size_t i = 0; i < repeat_count; ++i) {
-                adjacents.push_back(FabricNodeId(mesh_id, neighbor_chip_id));
-            }
-        }
-        return adjacents;
-    };
+    auto fabric_config = ::tt::tt_fabric::GetFabricConfig();
+    bool is_1d = ::tt::tt_fabric::is_1d_fabric_config(fabric_config);
 
     // Iterate over all mesh IDs from the mesh graph
     for (const auto& mesh_id : mesh_graph.get_all_mesh_ids()) {
         LogicalAdjacencyMap logical_adjacency_map;
-        for (const auto& [_, chip_id] : mesh_graph.get_chip_ids(mesh_id)) {
-            auto fabric_node_id = FabricNodeId(mesh_id, chip_id);
-            logical_adjacency_map[fabric_node_id] = get_local_adjacents(fabric_node_id, mesh_id);
+
+        if (is_1d) {
+            // For 1D fabric: only include neighbors that are adjacent in the logical 1D path
+            // This uses the LogicalTopologyTranslator to determine E/W neighbors
+            ::tt::tt_fabric::MeshShape mesh_shape = mesh_graph.get_mesh_shape(mesh_id);
+            ::tt::tt_fabric::LogicalTopologyTranslator translator(mesh_shape, fabric_config);
+
+            for (const auto& [_, chip_id] : mesh_graph.get_chip_ids(mesh_id)) {
+                auto fabric_node_id = FabricNodeId(mesh_id, chip_id);
+                std::vector<FabricNodeId> adjacents;
+
+                // Add E neighbor (next in logical line)
+                auto east_neighbor = translator.get_logical_neighbor(chip_id, ::tt::tt_fabric::RoutingDirection::E);
+                if (east_neighbor.has_value()) {
+                    adjacents.push_back(FabricNodeId(mesh_id, east_neighbor.value()));
+                }
+
+                // Add W neighbor (previous in logical line)
+                auto west_neighbor = translator.get_logical_neighbor(chip_id, ::tt::tt_fabric::RoutingDirection::W);
+                if (west_neighbor.has_value()) {
+                    adjacents.push_back(FabricNodeId(mesh_id, west_neighbor.value()));
+                }
+
+                logical_adjacency_map[fabric_node_id] = adjacents;
+            }
+        } else {
+            // For 2D fabric: use all physical connections
+            auto get_local_adjacents = [&](FabricNodeId fabric_node_id, MeshId mesh_id) {
+                auto adjacent_map = mesh_graph.get_intra_mesh_connectivity()[*mesh_id][fabric_node_id.chip_id];
+
+                std::vector<FabricNodeId> adjacents;
+                bool relaxed = mesh_graph.is_intra_mesh_policy_relaxed(mesh_id);
+                for (const auto& [neighbor_chip_id, edge] : adjacent_map) {
+                    // Skip self-connections
+                    if (neighbor_chip_id == fabric_node_id.chip_id) {
+                        continue;
+                    }
+                    size_t repeat_count = relaxed ? 1 : edge.connected_chip_ids.size();
+                    for (size_t i = 0; i < repeat_count; ++i) {
+                        adjacents.push_back(FabricNodeId(mesh_id, neighbor_chip_id));
+                    }
+                }
+                return adjacents;
+            };
+
+            for (const auto& [_, chip_id] : mesh_graph.get_chip_ids(mesh_id)) {
+                auto fabric_node_id = FabricNodeId(mesh_id, chip_id);
+                logical_adjacency_map[fabric_node_id] = get_local_adjacents(fabric_node_id, mesh_id);
+            }
         }
+
         adjacency_map[mesh_id] = logical_adjacency_map;
     }
 

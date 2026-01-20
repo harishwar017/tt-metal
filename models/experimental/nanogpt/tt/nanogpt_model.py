@@ -31,8 +31,10 @@ class TtGPT(nn.Module):
         self.device = device
 
         self.beta = ttnn.load_tensor(tt_cache_path + base_address + ".ln_f.bias" + str(dtype) + ".tensorbin")
+        self.beta = ttnn.to_device(self.beta, device)
 
         self.gamma = ttnn.load_tensor(tt_cache_path + base_address + ".ln_f.weight" + str(dtype) + ".tensorbin")
+        self.gamma = ttnn.to_device(self.gamma, device)
 
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
         self.wpe = nn.Embedding(self.config.block_size, config.n_embd)
@@ -61,7 +63,11 @@ class TtGPT(nn.Module):
 
         self.wte.weight = nn.Parameter(weight_torch.squeeze())  # https://paperswithcode.com/method/weight-tying
 
-    def forward(self, idx: torch.Tensor) -> ttnn.Tensor:
+    def forward(self, idx) -> ttnn.Tensor:
+        # Convert TTNN tensor to PyTorch if needed
+        if isinstance(idx, ttnn.Tensor):
+            idx = tt_to_torch_tensor(idx).to(dtype=torch.int64)
+
         b, t = idx.shape
         assert (
             t <= self.config.block_size
@@ -145,5 +151,59 @@ class TtGPT(nn.Module):
 
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
+
+        return idx
+
+    def generate_1(
+        self,
+        idx: torch.Tensor,
+        max_new_tokens: int = 20,
+        temperature: float = 1.0,
+        top_k=None,
+    ) -> torch.Tensor:
+        B = idx.size(0)
+        vocab_size = int(self.config.vocab_size)
+
+        # PRE-CALCULATE reciprocal temperature to avoid ttnn.reciprocal in loop
+        inv_temp = 1.0 / temperature
+
+        for _ in range(max_new_tokens):
+            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size :]
+
+            # 1. Forward pass (Keep on device)
+            tt_logits = self.forward(idx_cond)
+            print(f"tt_logit: {tt_logits.shape}")
+
+            # 2. Slice the last token's logits
+            # Instead of fallback_ops, use ttnn.slice if possible,
+            # or move to torch ONLY ONCE here.
+            logits = tt_to_torch_tensor(tt_logits)
+            # print("Logits shape:", logits.shape)
+
+            # [Batch, 1, seq_len, hidden] -> Get last token
+            # Adjust these indices based on your actual model output shape
+            logits = logits[:, :, -1, :]
+            logits = logits.view(B, -1)
+            logits = logits[:, :vocab_size]
+
+            # 3. Perform math in Torch (much faster for small vectors than H2D/D2H overhead)
+            if temperature != 1.0:
+                logits = logits * inv_temp
+
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float("Inf")
+
+            probs = torch.softmax(logits, dim=-1)
+
+            # 4. Sample next token
+            idx_next = torch.multinomial(probs, num_samples=1)
+
+            # 5. Append
+            idx = torch.cat((idx, idx_next), dim=1)
+
+            # CRITICAL: If you use any intermediate TT tensors,
+            # deallocate them or ensure they are overwritten.
+            # del tt_logits
 
         return idx

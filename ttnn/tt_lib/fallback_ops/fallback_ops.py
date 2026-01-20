@@ -24,6 +24,9 @@ def full(size: List[int], fill_value: float) -> ttnn.Tensor:
     | fill_value | Value with which to fill output tensor  | float       |                 | Yes      |
     +------------+-----------------------------------------+-------------+-----------------+----------+
     """
+    # Convert ttnn.Shape to tuple if necessary
+    if hasattr(size, "__iter__"):
+        size = tuple(size)
     return torch.full(size, fill_value, dtype=torch.float32)
 
 

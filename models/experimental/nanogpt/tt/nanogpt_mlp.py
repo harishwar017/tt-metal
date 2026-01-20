@@ -12,20 +12,26 @@ class TtMLP(torch.nn.Module):
         super().__init__()
         # Get the weights
         self.tt_weight_c_fc = ttnn.load_tensor(
-            tt_cache_path + base_address + ".c_fc.weight" + str(dtype) + ".tensorbin"
+            tt_cache_path + base_address + ".c_fc.weight" + str(dtype) + ".tensorbin",
+            device=device,
         )
         self.tt_weight_c_proj = ttnn.load_tensor(
-            tt_cache_path + base_address + ".c_proj.weight" + str(dtype) + ".tensorbin"
+            tt_cache_path + base_address + ".c_proj.weight" + str(dtype) + ".tensorbin",
+            device=device,
         )
 
         self.config = config
         self.device = device
 
         # Load biases
-        self.tt_bias_c_fc = ttnn.load_tensor(tt_cache_path + base_address + ".c_fc.bias" + str(dtype) + ".tensorbin")
+        self.tt_bias_c_fc = ttnn.load_tensor(
+            tt_cache_path + base_address + ".c_fc.bias" + str(dtype) + ".tensorbin",
+            device=device,
+        )
 
         self.tt_bias_c_proj = ttnn.load_tensor(
-            tt_cache_path + base_address + ".c_proj.bias" + str(dtype) + ".tensorbin"
+            tt_cache_path + base_address + ".c_proj.bias" + str(dtype) + ".tensorbin",
+            device=device,
         )
 
         self.tt_weight_c_fc = ttnn.transpose(self.tt_weight_c_fc, -2, -1)
@@ -38,5 +44,6 @@ class TtMLP(torch.nn.Module):
         x1 = self.c_fc(x)
         x2 = ttnn.gelu(x1)
         x3 = self.c_proj(x2)
-
+        # Ensure output is in TILE layout for next operations
+        x3 = ttnn.to_layout(x3, ttnn.TILE_LAYOUT)
         return x3

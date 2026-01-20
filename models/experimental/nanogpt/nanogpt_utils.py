@@ -5,7 +5,9 @@
 from models.common.utility_functions import tt2torch_tensor
 import torch
 import ttnn
-from transformers import GPT2LMHeadModel
+
+# from transformers import GPT2LMHeadModel
+from transformers import AutoModelForCausalLM, GPT2LMHeadModel
 from tt_lib.utils import pad_weight
 from pathlib import Path
 import os
@@ -61,7 +63,8 @@ If they are not available, it will convert torch tensor weights to TT tensor wei
 
 
 def store_weights(model_version, file_name, base_address, dtype):
-    model_hf = GPT2LMHeadModel.from_pretrained(model_version)
+    # model_hf = GPT2LMHeadModel.from_pretrained(model_version)
+    model_hf = AutoModelForCausalLM.from_pretrained("nickmalhotra/ProjectIndus")
     state_dict = model_hf.state_dict()
     weights_dtype = dtype
 
@@ -103,5 +106,5 @@ def get_tt_cache_path(model_version):
     if tt_cache_path.exists():
         return str(tt_cache_path) + "/"
     else:
-        Path(f"models/experimental/nanogpt/datasets/{model_version}").mkdir(parents=True, exist_ok=True)
-        return str(Path(f"models/experimental/nanogpt/datasets/{model_version}")) + "/"
+        Path(f"/tt-metal/models/experimental/nanogpt/datasets/{model_version}").mkdir(parents=True, exist_ok=True)
+        return str(Path(f"/tt-metal/models/experimental/nanogpt/datasets/{model_version}")) + "/"

@@ -139,3 +139,5 @@ ttnn/ttnn/.rpath_checked__ttnn
 Testing
 hari_workspace/
 indusenv/
+models/experimental/nanogpt/datasets/
+newenv/

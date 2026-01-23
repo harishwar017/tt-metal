@@ -2,20 +2,18 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
+import time
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import ttnn
 from models.common.helper_funcs import Linear
 
 import ttnn
 
-import models.experimental.nanogpt.tt.nanogpt_block as nanogpt_block
+import models.experimental.nanogpt.tt.indus_block as indus_block
 from models.experimental.nanogpt.nanogpt_utils import unpad_from_zero
 
-from models.common.utility_functions import (
-    torch_to_tt_tensor_rm,
-    tt_to_torch_tensor,
-)
 
 
 class TtGPT(nn.Module):
@@ -35,17 +33,20 @@ class TtGPT(nn.Module):
         self.gamma = ttnn.load_tensor(tt_cache_path + base_address + ".ln_f.weight" + str(dtype) + ".tensorbin")
         self.gamma = ttnn.to_device(self.gamma, device)
 
-        self.wte = nn.Embedding(config.vocab_size, config.n_embd)
-        self.wpe = nn.Embedding(self.config.block_size, config.n_embd)
-
-        self.wte.weight = torch.nn.Parameter(torch.load(tt_cache_path + "transformer.wte.weight.pt"))
-
-        self.wpe.weight = torch.nn.Parameter(torch.load(tt_cache_path + "transformer.wpe.weight.pt"))
+        wte_torch = torch.load(tt_cache_path + "transformer.wte.weight.pt")
+        wpe_torch = torch.load(tt_cache_path + "transformer.wpe.weight.pt")
+        # Keep embeddings in ROW_MAJOR as they are lookup tables
+        self.tt_wte_weight = ttnn.from_torch(
+            wte_torch, device=self.device, layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16
+        )
+        self.tt_wpe_weight = ttnn.from_torch(
+            wpe_torch, device=self.device, layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16
+        )
 
         blocks = []
 
         for i in range(config.n_layer):
-            block = nanogpt_block.TtBlock(self.config, f"{base_address}.h.{i}", self.device, tt_cache_path, dtype)
+            block = indus_block.TtBlock(self.config, f"{base_address}.h.{i}", self.device, tt_cache_path, dtype)
             blocks.append(block)
 
         self.h = nn.ModuleList(blocks)
@@ -56,40 +57,45 @@ class TtGPT(nn.Module):
 
         weight = unpad_from_zero(tt_lm_weight, (1, 1, self.config.vocab_size, self.config.n_embd))
         weight_torch = weight
-        weight = torch_to_tt_tensor_rm(weight, device=self.device)
+        weight = ttnn.from_torch(weight, device=self.device, layout=ttnn.ROW_MAJOR_LAYOUT)
 
         self.lm_head = Linear(self.config.n_embd, self.config.vocab_size, weight)
 
-        self.wte.weight = nn.Parameter(weight_torch.squeeze())  # https://paperswithcode.com/method/weight-tying
-
     def forward(self, idx) -> ttnn.Tensor:
         # Convert TTNN tensor to PyTorch if needed
-        if isinstance(idx, ttnn.Tensor):
-            idx = tt_to_torch_tensor(idx).to(dtype=torch.int64)
-
+        # if isinstance(idx, ttnn.Tensor):
+        #     idx = ttnn.to_torch(idx).to(dtype=torch.int64)
         b, t = idx.shape
         assert (
             t <= self.config.block_size
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = ttnn.arange(0, t, 1)
-        pos = tt_to_torch_tensor(pos)
-        pos = pos.squeeze(0).squeeze(0)
-        pos = pos.to(dtype=torch.int64)
-        # forward the GPT model itself
-        tok_emb = self.wte(idx)  # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.wpe(pos)  # position embeddings of shape (1, t, n_embd)
-        tt_tok_emb = torch_to_tt_tensor_rm(tok_emb, self.device)
-        tt_pos_emb = torch_to_tt_tensor_rm(pos_emb, self.device)
-        tt_tok_emb = ttnn.permute(tt_tok_emb, (0, 2, 1, 3))
-        tt_pos_emb = ttnn.permute(tt_pos_emb, (0, 2, 1, 3))
-        tt_x = ttnn.add(tt_tok_emb, tt_pos_emb)
+        pos = torch.arange(0, t, dtype=torch.long).unsqueeze(0)
+        tt_pos = ttnn.from_torch(pos, device=self.device)
+
+        # 1. Token Embedding Lookup (on-device)
+        tok_emb = ttnn.embedding(idx, self.tt_wte_weight)
+
+        # 2. Position Embedding Lookup (on-device)
+        pos_emb = ttnn.embedding(tt_pos, self.tt_wpe_weight)
+
+        tt_tok_emb = ttnn.permute(tok_emb, (0, 2, 1))
+        tt_pos_emb = ttnn.permute(pos_emb, (0, 2, 1))
+        # 3. Combine [Batch, 1, Seq_Len, Hidden]
+        x = ttnn.add(tok_emb, pos_emb)
+
+        # x = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
+        # tt_x = ttnn.permute(tt_x, (0, 2, 1))
+
+        shape = x.padded_shape
+        x = ttnn.reshape(x, (1, shape[0], shape[1], shape[2]))
+
+        for block in self.h:
+            x = block.forward(x)
+        x = self.ln_f(x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
+        logits = self.lm_head(x)
+
         tt_tok_emb.deallocate()
         tt_pos_emb.deallocate()
-        tt_x = ttnn.permute(tt_x, (0, 2, 1, 3))
-        for block in self.h:
-            tt_x = block.forward(tt_x)
-        tt_x = self.ln_f(tt_x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
-        logits = self.lm_head(tt_x)
 
         return logits
 
@@ -114,7 +120,7 @@ class TtGPT(nn.Module):
             tt_logits = self.forward(idx_cond)
 
             # Convert to torch first
-            logits = tt_to_torch_tensor(tt_logits)  # shape: [1, 1, T, vocab_size]
+            logits = ttnn.to_torch(tt_logits)  # shape: [1, 1, T, vocab_size]
 
             # Get last token logits: [1, 1, 1, vocab_size] -> [1, vocab_size]
             logits = logits[:, :, -1, :B]  # Last time step, first B vocab entries
@@ -159,25 +165,22 @@ class TtGPT(nn.Module):
         idx: torch.Tensor,
         max_new_tokens: int = 20,
         temperature: float = 1.0,
+        do_sample: bool = True,
         top_k=None,
     ) -> torch.Tensor:
         B = idx.size(0)
         vocab_size = int(self.config.vocab_size)
-
-        # PRE-CALCULATE reciprocal temperature to avoid ttnn.reciprocal in loop
-        inv_temp = 1.0 / temperature
 
         for _ in range(max_new_tokens):
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size :]
 
             # 1. Forward pass (Keep on device)
             tt_logits = self.forward(idx_cond)
-            print(f"tt_logit: {tt_logits.shape}")
 
             # 2. Slice the last token's logits
             # Instead of fallback_ops, use ttnn.slice if possible,
             # or move to torch ONLY ONCE here.
-            logits = tt_to_torch_tensor(tt_logits)
+            logits = ttnn.to_torch(tt_logits)
             # print("Logits shape:", logits.shape)
 
             # [Batch, 1, seq_len, hidden] -> Get last token
@@ -186,27 +189,148 @@ class TtGPT(nn.Module):
             logits = logits.view(B, -1)
             logits = logits[:, :vocab_size]
 
-            # 3. Perform math in Torch (much faster for small vectors than H2D/D2H overhead)
-            if temperature != 1.0:
-                logits = logits * inv_temp
+            if do_sample:
+                if temperature != 1.0:
+                    logits = logits / max(temperature, 1e-5)
 
-            if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float("Inf")
+                if top_k is not None:
+                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                    logits[logits < v[:, [-1]]] = -float("Inf")
 
-            probs = torch.softmax(logits, dim=-1)
+                probs = torch.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(probs, num_samples=1)
 
-            # 4. Sample next token
-            idx_next = torch.multinomial(probs, num_samples=1)
-
-            # 5. Append
-            idx = torch.cat((idx, idx_next), dim=1)
+                idx = torch.cat((idx, idx_next), dim=1)
+            else:
+                # Greedy decoding
+                idx_next = torch.argmax(logits, dim=-1, keepdim=True)
+                idx = torch.cat((idx, idx_next), dim=1)
 
             # CRITICAL: If you use any intermediate TT tensors,
             # deallocate them or ensure they are overwritten.
             # del tt_logits
 
         return idx
+
+    def generate_2(
+        self,
+        idx: None,
+        max_new_tokens: int = 20,
+        temperature: float = 1.0,
+        do_sample: bool = True,
+        top_k=None,
+    ) -> torch.Tensor:
+        B = idx.shape[0]
+        vocab_size = int(self.config.vocab_size)
+
+        # PRE-CALCULATE reciprocal temperature to avoid ttnn.reciprocal in loop
+
+        for _ in range(max_new_tokens):
+            idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
+
+            # 1. Forward pass (Keep on device)
+            tt_logits = self.forward(idx_cond)
+
+            tt_logits = ttnn.squeeze(tt_logits, dim=1)
+            tt_logits = tt_logits[:, -1, :vocab_size]
+            tt_logits = ttnn.squeeze(tt_logits, dim=1)
+
+            if do_sample:
+                if temperature != 1.0:
+                    logits = logits / max(temperature, 1e-5)
+
+                if top_k is not None:
+                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                    logits[logits < v[:, [-1]]] = -float("Inf")
+
+                probs = torch.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(probs, num_samples=1)
+
+                idx = torch.cat((idx, idx_next), dim=1)
+            else:
+                # Greedy decoding
+                idx_next = ttnn.argmax(tt_logits, dim=-1, keepdim=True)
+                idx = ttnn.concat([idx, idx_next], dim=1)
+
+            # CRITICAL: If you use any intermediate TT tensors,
+            # deallocate them or ensure they are overwritten.
+            # del tt_logits
+
+        return idx
+
+    def generate_timed(
+        self,
+        idx: None,
+        max_new_tokens: int = 20,
+        temperature: float = 1.0,
+        do_sample: bool = True,
+        top_k=None,
+        return_timing: bool = True,
+    ):
+        B = idx.shape[0]
+        vocab_size = int(self.config.vocab_size)
+
+        # Ensure we start timing after previous async work finishes
+        ttnn.synchronize_device(self.device)
+        t_start = time.perf_counter()
+
+        ttft_s = None
+        decode_start = None
+
+        for i in range(max_new_tokens):
+            idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
+
+            # ---- Forward pass ----
+            tt_logits = self.forward(idx_cond)
+
+            # logits shape handling
+            tt_logits = ttnn.squeeze(tt_logits, dim=1)
+            tt_logits = tt_logits[:, -1, :vocab_size]
+            tt_logits = ttnn.squeeze(tt_logits, dim=1)
+
+            # ---- Next token ----
+            if do_sample:
+                # NOTE: your sampling branch currently uses torch tensors named `logits`
+                # but `tt_logits` is TT tensor. Unless you convert, this path is wrong.
+                # For benchmarking speed, always use greedy decoding.
+                raise NotImplementedError("Sampling path mixes torch/ttnn tensors; benchmark with do_sample=False.")
+            else:
+                idx_next = ttnn.argmax(tt_logits, dim=-1, keepdim=True)
+                idx = ttnn.concat([idx, idx_next], dim=1)
+
+            # ---- TTFT measurement ----
+            if i == 0:
+                # First token has been produced, wait for device to finish this iteration
+                ttnn.synchronize_device(self.device)
+                t_after_first = time.perf_counter()
+                ttft_s = t_after_first - t_start
+
+                # Start decode timing AFTER first token
+                decode_start = time.perf_counter()
+
+        # final sync so total timing is correct
+        ttnn.synchronize_device(self.device)
+        t_end = time.perf_counter()
+
+        # ---- metrics ----
+        total_time_s = t_end - t_start
+        decode_time_s = (t_end - decode_start) if decode_start is not None else 0.0
+
+        decode_tokens = max(max_new_tokens - 1, 0)
+        decode_tps = (decode_tokens / decode_time_s) if decode_time_s > 0 else float("inf")
+        overall_tps = (max_new_tokens / total_time_s) if total_time_s > 0 else float("inf")
+
+        timing = {
+            "ttft_s": ttft_s,
+            "decode_tps": decode_tps,
+            "overall_tps": overall_tps,
+            "total_time_s": total_time_s,
+            "decode_time_s": decode_time_s,
+            "max_new_tokens": max_new_tokens,
+            "batch_size": B,
+        }
+
+        return (idx, timing) if return_timing else idx
 
     def generate_full(
         self,
@@ -242,7 +366,7 @@ class TtGPT(nn.Module):
 
             # 2. Move only the last token logits to Host CPU
             # Shape: [B*num_beams, 1, seq_len, Hidden] -> [B*num_beams, vocab_size]
-            logits = tt_to_torch_tensor(tt_logits)
+            logits = ttnn.to_torch(tt_logits)
             logits = logits[:, 0, -1, :vocab_size]
 
             # 3. Apply Repetition Penalty

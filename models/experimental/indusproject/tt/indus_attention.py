@@ -4,7 +4,6 @@
 
 import torch.nn as nn
 import ttnn
-import math
 from models.common.helper_funcs import Linear
 
 
@@ -74,73 +73,26 @@ class TtCausalSelfAttention(nn.Module):
 
         return ttnn.to_layout(pad_mask, ttnn.TILE_LAYOUT)
 
-    def forward(self, x: ttnn.Tensor, idx: ttnn.Tensor, pad_mask: ttnn.Tensor) -> ttnn.Tensor:
-        # Convert to ROW_MAJOR for reshape operations
-        x = ttnn.to_layout(x, ttnn.ROW_MAJOR_LAYOUT)
-        (B, _, T, C) = x.padded_shape  # batch size, sequence length, embedding dimensionality (n_embd)
-
+    def forward(self, x: ttnn.Tensor) -> ttnn.Tensor:
         x1 = self.c_attn(x)
-        # Ensure x1 is ROW_MAJOR for the split operation
-        x1 = ttnn.to_layout(x1, ttnn.ROW_MAJOR_LAYOUT)
 
-        x1 = ttnn.squeeze(x1, dim=1)
-        q = x1[:, :, 0 : self.n_embd]
-        k = x1[:, :, self.n_embd : 2 * self.n_embd]
-        v = x1[:, :, 2 * self.n_embd : 3 * self.n_embd]
+        q, k, v = ttnn.experimental.nlp_create_qkv_heads(
+            input=x1, input_kv=None, num_heads=self.n_head, num_kv_heads=None, transpose_k_heads=False
+        )
+        ttnn.deallocate(x1)
 
-        q = ttnn.reshape(q, (B, T, self.n_head, C // self.n_head))
-        q = ttnn.permute(q, (0, 2, 1, 3))  # (B, n_head, T, head_dim)
-        q = ttnn.to_layout(q, ttnn.TILE_LAYOUT)
+        tt_y = ttnn.transformer.scaled_dot_product_attention(q, k, v, is_causal=True)
 
-        k = ttnn.reshape(k, (B, T, self.n_head, C // self.n_head))
-        k = ttnn.permute(k, (0, 2, 1, 3))  # (B, n_head, T, head_dim)
-        k = ttnn.to_layout(k, ttnn.TILE_LAYOUT)
-
-        v = ttnn.reshape(v, (B, T, self.n_head, C // self.n_head))
-        v = ttnn.permute(v, (0, 2, 1, 3))  # (B, n_head, T, head_dim)
-        v = ttnn.to_layout(v, ttnn.TILE_LAYOUT)
-
-        # manual implementation of attention
-        key_layer_transposed = ttnn.transpose(k, -2, -1)
-        att = ttnn.matmul(q, key_layer_transposed)
-        ttnn.deallocate(key_layer_transposed)
+        # Free early
         ttnn.deallocate(q)
-
-        scale_factor = 1.0 / math.sqrt(k.padded_shape[-1])
-        att = ttnn.multiply(att, scale_factor)
-
-        causal_mask = ttnn.slice(self.tt_bias, [0, 0, 0, 0], [1, 1, T, T])
-        causal_mask = ttnn.gt(causal_mask, 0.0)
-        neg_inf = ttnn.full(att.shape, -1e9, device=self.device, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-
-        # pad_mask = ttnn.ne(idx, self.pad_id)
-        # pad_mask = ttnn.unsqueeze(pad_mask, 1)
-        # pad_mask = ttnn.unsqueeze(pad_mask, 1)
-        # pad_mask = ttnn.to_layout(pad_mask, ttnn.TILE_LAYOUT)
-
-        att = ttnn.where(pad_mask, att, neg_inf)
-        tt_att = ttnn.where(causal_mask, att, neg_inf)
-        ttnn.deallocate(neg_inf)
-        ttnn.deallocate(causal_mask)
-        ttnn.deallocate(att)
-
-        tt_att = ttnn.softmax(tt_att)  # Using ttnn.softmax reduces pcc from 0.99 to 0.98 for whole model
-        # Convert to TILE for matmul with v
-        tt_att = ttnn.to_layout(tt_att, ttnn.TILE_LAYOUT)
-
-        tt_y = ttnn.matmul(tt_att, v)
-        ttnn.deallocate(tt_att)
+        ttnn.deallocate(k)
         ttnn.deallocate(v)
 
-        tt_y = ttnn.transpose(tt_y, 1, -2)
-        tt_y = ttnn.to_layout(tt_y, ttnn.ROW_MAJOR_LAYOUT)
-        tt_y = ttnn.reshape_on_device(tt_y, B, 1, T, C)
-        tt_y = ttnn.to_layout(tt_y, ttnn.TILE_LAYOUT)
-
-        ttnn.deallocate(k)
-        ttnn.deallocate(x1)  # - H should look for the most optimal place to deallocate this
+        tt_y = ttnn.experimental.nlp_concat_heads(tt_y)
 
         # output projection
         x2 = self.c_proj(tt_y)
+
         ttnn.deallocate(tt_y)
+
         return x2

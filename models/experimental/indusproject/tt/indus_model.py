@@ -59,42 +59,35 @@ class TtGPT(nn.Module):
 
         self.lm_head = Linear(self.config.n_embd, self.config.vocab_size, weight)
 
+        self.tt_pos_cache = ttnn.arange(
+            start=0,
+            end=self.config.block_size,
+            step=1,
+            device=self.device,
+            dtype=ttnn.uint32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        ).reshape((1, self.config.block_size))
+
+        self.pos_cache = ttnn.embedding(self.tt_pos_cache, self.tt_wpe_weight)
+
     def forward(self, idx) -> ttnn.Tensor:
         b, t = idx.shape
         assert (
             t <= self.config.block_size
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
 
-        tt_pos = ttnn.arange(
-            start=0, end=t, step=1, device=self.device, dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT
-        ).reshape((1, t))
-
-        # 1. Token Embedding Lookup (on-device)
         tok_emb = ttnn.embedding(idx, self.tt_wte_weight)
-        # print("tok_emb shape:", tok_emb.shape)
+        pos_emb = self.pos_cache[:, :t, :]
 
-        # 2. Position Embedding Lookup (on-device)
-        pos_emb = ttnn.embedding(tt_pos, self.tt_wpe_weight)
-        # print("pos_emb shape:", pos_emb.shape)
-
-        tt_tok_emb = ttnn.permute(tok_emb, (0, 2, 1))
-        tt_pos_emb = ttnn.permute(pos_emb, (0, 2, 1))
-        # 3. Combine [Batch, 1, Seq_Len, Hidden]
         x = ttnn.add(tok_emb, pos_emb)
-        # print("x shape after adding pos and tok emb:", x.shape)
+        # x = ttnn.unsqueeze(x, dim=1)
+        x = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
 
-        # shape = x.padded_shape
-        # x = ttnn.reshape(x, (1, shape[0], shape[1], shape[2]))
-        x = ttnn.unsqueeze(x, dim=1)
-
-        pad_mask = self.h[0].attn.make_pad_mask(idx)
+        # pad_mask = self.h[0].attn.make_pad_mask(idx)
         for block in self.h:
-            x = block.forward(x, idx, pad_mask)
+            x = block.forward(x, idx=None, pad_mask=None)
         x = self.ln_f(x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
         logits = self.lm_head(x)
-
-        tt_tok_emb.deallocate()
-        tt_pos_emb.deallocate()
 
         return logits
 
@@ -163,8 +156,6 @@ class TtGPT(nn.Module):
         do_sample: bool = False,  # keep greedy for now
         top_k=None,
     ):
-        print(f"eos id: {eos_id}")
-
         vocab_size = int(self.config.vocab_size)
 
         # Convert to TT once
@@ -173,7 +164,7 @@ class TtGPT(nn.Module):
                 idx.to(torch.uint32),
                 device=self.device,
                 dtype=ttnn.uint32,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
+                layout=ttnn.TILE_LAYOUT,
             )
 
         B = idx.shape[0]
@@ -197,6 +188,7 @@ class TtGPT(nn.Module):
 
             # Make [B,1]
             idx_next = ttnn.unsqueeze(idx_next, dim=1)
+            idx_next = ttnn.to_layout(idx_next, ttnn.TILE_LAYOUT)
 
             idx = ttnn.concat([idx, idx_next], dim=1)
 
@@ -222,43 +214,46 @@ class TtGPT(nn.Module):
         ttfts = []
         tpss = []
 
-        # Convert to TT once
+        # Convert to TT once (TILE layout)
         if not isinstance(idx, ttnn.Tensor):
-            idx = ttnn.from_torch(
+            base_idx = ttnn.from_torch(
                 idx.to(torch.uint32),
                 device=self.device,
                 dtype=ttnn.uint32,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
+                layout=ttnn.TILE_LAYOUT,
             )
+        else:
+            base_idx = idx
 
         for _ in range(runs):
+            # Reset for each run
+            idx = ttnn.clone(base_idx)
+
             B = idx.shape[0]
 
             start = time.perf_counter()
 
-            # finished = torch.zeros(B, dtype=torch.bool)
             first_token_time = None
             tokens_generated = 0
 
-            # cur_idx = idx.clone()
-
             for step in range(max_new_tokens):
-                step_start = time.perf_counter()
                 idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
+
                 tt_logits = self.forward(idx_cond)
+
                 tt_logits = ttnn.squeeze(tt_logits, dim=1)
                 last_logits = tt_logits[:, -1, :]
+
                 idx_next = ttnn.argmax(last_logits, dim=-1)
                 idx_next = ttnn.unsqueeze(idx_next, 1)
-
-                # Force sync
-                # next_tok = ttnn.to_torch(idx_next)
 
                 if first_token_time is None:
                     first_token_time = time.perf_counter()
 
                 tokens_generated += B
 
+                # Safe: both TILE
+                idx_next = ttnn.to_layout(idx_next, ttnn.TILE_LAYOUT)
                 idx = ttnn.concat([idx, idx_next], dim=1)
 
             end = time.perf_counter()

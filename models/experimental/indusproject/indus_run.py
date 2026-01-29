@@ -78,6 +78,8 @@ print(f"Test input shape: {test_input_ids.shape}")
 # )
 
 timing = tt_model.benchmark_generate(idx=test_input_ids, max_new_tokens=32, eos_id=tokenizer.eos_token_id)
+print(f"TT Generate ttft_avg: {timing['ttft_avg']} seconds")
+print(f"TT Generate tps_avg: {timing['tps_avg']} seconds")
 
 print("done")
 # output_ids = tt_model.generate_1(

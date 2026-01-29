@@ -2,7 +2,7 @@
 import ttnn
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from models.experimental.indusproject.indusproject_utils import get_tt_cache_path, store_weights
-import models.experimental.nanogpt.tt.indus_model as indus_model
+import models.experimental.indusproject.tt.indus_model as indus_model
 from pathlib import Path
 import os
 
@@ -77,13 +77,7 @@ print(f"Test input shape: {test_input_ids.shape}")
 #     runs=5,
 # )
 
-timing = tt_model.generate_timed(
-    idx=test_input_ids,
-    do_sample=False,
-    max_new_tokens=32,
-    temperature=1.0,
-    # eos_id=tokenizer.eos_token_id
-)
+timing = tt_model.benchmark_generate(idx=test_input_ids, max_new_tokens=32, eos_id=tokenizer.eos_token_id)
 
 print("done")
 # output_ids = tt_model.generate_1(

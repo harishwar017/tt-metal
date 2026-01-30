@@ -44,18 +44,14 @@ def format_template(user_prompt):
     return response
 
 
-# user_prompt = """भारत की राजधानी क्या है?"""
-# user_prompt = """भारत के वर्तमान प्रधानमंत्री कौन हैं?"""
-user_prompt = """दिल्ली किस नदी के किनारे स्थित है?"""
-# user_prompt = """भारत के पहले राष्ट्रपति कौन थे?"""
-# user_prompt = """ताजमहल कहाँ स्थित है?"""
+user_prompt = """भारत की राजधानी क्या है?"""
 
 test_input_ids = format_template(user_prompt)
 print(f"Test input: {user_prompt}")
 
 
-output_ids = tt_model.generate_1(idx=test_input_ids, do_sample=False, max_new_tokens=32, eos_id=tokenizer.eos_token_id)
-output_ids = ttnn.to_torch(output_ids)
-text = tokenizer.decode(output_ids[0].tolist(), skip_special_tokens=False)
-print(f"\nGenerated text:\n{text}")
-print("\n✓ TT Generate function works!")
+print("Benchmarking indus model...")
+
+timing = tt_model.benchmark_generate(idx=test_input_ids, max_new_tokens=32, eos_id=tokenizer.eos_token_id)
+print(f"TT Generate ttft: {timing['ttft_avg']} seconds")
+print(f"TT Generate tps: {timing['tps_runs'][-1]} seconds")

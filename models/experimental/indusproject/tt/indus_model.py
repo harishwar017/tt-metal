@@ -230,6 +230,8 @@ class TtGPT(nn.Module):
             idx = ttnn.clone(base_idx)
 
             B = idx.shape[0]
+            # Track which sequences are finished
+            finished = torch.zeros(B, dtype=torch.bool)
 
             start = time.perf_counter()
 
@@ -256,6 +258,16 @@ class TtGPT(nn.Module):
                 idx_next = ttnn.to_layout(idx_next, ttnn.TILE_LAYOUT)
                 idx = ttnn.concat([idx, idx_next], dim=1)
 
+                # EOS handling (CPU)
+                if eos_id is not None:
+                    next_tok = ttnn.to_torch(idx_next).squeeze(1)  # [B]
+
+                    finished |= next_tok == eos_id
+
+                    # Stop if all finished
+                    if finished.all():
+                        break
+
             end = time.perf_counter()
 
             ttft = first_token_time - start
@@ -270,4 +282,5 @@ class TtGPT(nn.Module):
             "tps_avg": sum(tpss) / len(tpss),
             "ttft_runs": ttfts,
             "tps_runs": tpss,
+            "idx": idx,
         }

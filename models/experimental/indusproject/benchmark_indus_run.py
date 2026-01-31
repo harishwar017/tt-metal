@@ -53,5 +53,10 @@ print(f"Test input: {user_prompt}")
 print("Benchmarking indus model...")
 
 timing = tt_model.benchmark_generate(idx=test_input_ids, max_new_tokens=32, eos_id=tokenizer.eos_token_id)
+
+output_ids = ttnn.to_torch(timing["idx"])
+text = tokenizer.decode(output_ids[0].tolist(), skip_special_tokens=True)
+print("✓ Benchmark complete!")
+print(f"Generated output: {text}")
 print(f"TT Generate ttft: {timing['ttft_avg']} seconds")
 print(f"TT Generate tps: {timing['tps_runs'][-1]} seconds")

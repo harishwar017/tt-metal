@@ -44,7 +44,7 @@ def format_template(user_prompt):
     return response
 
 
-user_prompt = """भारत की राजधानी क्या है?"""
+user_prompt = """भारत के वर्तमान समय में देश की सरकार का नेतृत्व करने वाले, संसद में बहुमत रखने वाली पार्टी के नेता और प्रशासनिक फैसलों में मुख्य भूमिका निभाने वाले प्रधानमंत्री कौन हैं?"""
 
 # format_template already returns tokenized input_ids
 test_input_ids = format_template(user_prompt)
@@ -68,32 +68,32 @@ print(f"Test input shape: {test_input_ids.shape}")
 # print("Shape:", test_input_ids.shape)
 
 
-# eos_id = tokenizer.eos_token_id
-
-# stats = tt_model.benchmark_generate(
+# timing = tt_model.benchmark_generate(
 #     idx=test_input_ids,
+#     # do_sample=False,
 #     max_new_tokens=32,
-#     eos_id=tokenizer.eos_token_id,
-#     runs=5,
+#     # temperature=1.0,
+#     eos_id=tokenizer.eos_token_id
 # )
 
-timing = tt_model.benchmark_generate(idx=test_input_ids, max_new_tokens=32, eos_id=tokenizer.eos_token_id)
-print(f"TT Generate timing: {timing['ttft_avg']} s ")
-print(f"TT Generate TPS: {timing['tps_avg']} tokens/s ")
 
-print("done")
-# output_ids = tt_model.generate_1(
-#     idx=test_input_ids,
-#     do_sample=False,
-#     # max_new_tokens=10,
-#     temperature=1.0,
-#     eos_id=eos_id
-# )
+timings = tt_model.generate_kv(
+    idx=test_input_ids,
+    max_new_tokens=12,
+    eos_id=tokenizer.eos_token_id,
+    # bos_id=tokenizer.bos_token_id,
+)
+# print(f"ttft avg: {timings['ttft_avg']}")
+# print(f"tps avg: {timings['tps_avg']}")
+output_ids = ttnn.to_torch(timings)
+text = tokenizer.decode(output_ids[0].tolist(), skip_special_tokens=False)
+print(f"text: {text}")
 # print(f"Output shape: {output_ids.shape}")
 # output_ids = ttnn.to_torch(output_ids)
 # text = tokenizer.decode(output_ids[0].tolist(), skip_special_tokens=False)
-# print(f"\nGenerated text:\n{text}")
+
 # print("\n✓ TT Generate function works!")
+# print("done")
 
 # texts = tokenizer.batch_decode(output_ids, skip_special_tokens=False)
 

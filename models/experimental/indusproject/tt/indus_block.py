@@ -52,3 +52,12 @@ class TtBlock(nn.Module):
         x = ttnn.add(x, tmp)
 
         return x
+
+    def forward_prefill(self, x: ttnn.Tensor) -> ttnn.Tensor:
+        tmp = self.attn.forward_prefill(self.ln_1(x, epsilon=1e-5, weight=self.gamma_1, bias=self.beta_1))
+        x = ttnn.add(x, tmp)
+
+        tmp = self.mlp.forward(self.ln_2(x, epsilon=1e-5, weight=self.gamma_2, bias=self.beta_2))
+        x = ttnn.add(x, tmp)
+
+        return x

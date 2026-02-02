@@ -91,6 +91,27 @@ class TtGPT(nn.Module):
 
         return logits
 
+    def forward_prefill(self, idx):
+        b, t = idx.shape
+        assert (
+            t <= self.config.block_size
+        ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+
+        tok_emb = ttnn.embedding(idx, self.tt_wte_weight)
+        pos_emb = self.pos_cache[:, :t, :]
+
+        x = ttnn.add(tok_emb, pos_emb)
+        # x = ttnn.unsqueeze(x, dim=1)
+        x = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
+
+        for block in self.h:
+            x = block.forward_prefill(x)
+
+        x = self.ln_f(x)
+        logits = self.lm_head(x)
+
+        return logits
+
     def generate(
         self,
         idx: None,
@@ -204,11 +225,85 @@ class TtGPT(nn.Module):
 
         return idx
 
+    def generate_kv(
+        self,
+        idx,
+        max_new_tokens: int = 20,
+        temperature: float = 1.0,
+        eos_id: int = None,
+        do_sample: bool = False,  # keep greedy for now
+        top_k=None,
+    ):
+        vocab_size = int(self.config.vocab_size)
+
+        # Convert to TT once
+        if not isinstance(idx, ttnn.Tensor):
+            idx = ttnn.from_torch(
+                idx.to(torch.uint32),
+                device=self.device,
+                dtype=ttnn.uint32,
+                layout=ttnn.TILE_LAYOUT,
+            )
+
+        B = idx.shape[0]
+
+        # Track which sequences are finished
+        finished = torch.zeros(B, dtype=torch.bool)
+        # self.reset_kv_cache()
+        prefill_logits = self.forward_prefill(idx)
+
+        tt_logits = ttnn.squeeze(prefill_logits, dim=1)
+        last_logits = tt_logits[:, -1, :]
+
+        idx_next = ttnn.argmax(last_logits, dim=-1)
+        idx_next = ttnn.unsqueeze(idx_next, 1)
+        idx_next = ttnn.to_layout(idx_next, ttnn.TILE_LAYOUT)
+
+        idx = ttnn.concat([idx, idx_next], dim=1)
+        print(idx_next)
+
+        for _ in range(max_new_tokens):
+            idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
+
+            # Forward
+            tt_logits = self.forward(idx_next)
+
+            tt_logits = ttnn.squeeze(tt_logits, dim=1)
+
+            # Take last timestep: [B, V]
+            last_logits = tt_logits[:, -1, :]
+
+            # Argmax: [B]
+            idx_next = ttnn.argmax(last_logits, dim=-1)
+
+            # Make [B,1]
+            idx_next = ttnn.unsqueeze(idx_next, dim=1)
+            idx_next = ttnn.to_layout(idx_next, ttnn.TILE_LAYOUT)
+
+            idx = ttnn.concat([idx, idx_next], dim=1)
+
+            # EOS handling (CPU)
+            if eos_id is not None:
+                next_tok = ttnn.to_torch(idx_next).squeeze(1)  # [B]
+
+                finished |= next_tok == eos_id
+
+                # Stop if all finished
+                if finished.all():
+                    break
+
+        return idx
+
+    # def reset_kv_cache(self):
+    #     for block in self.h:
+    #         block.attn.reset_kv_cache()
+
     def benchmark_generate(
         self,
         idx,
         max_new_tokens,
         eos_id,
+        bos_id,
         runs=5,
     ):
         ttfts = []
@@ -236,15 +331,40 @@ class TtGPT(nn.Module):
             first_token_time = None
             tokens_generated = 0
 
-            for step in range(max_new_tokens):
-                idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
+            self.reset_kv_cache()
+            prefill_logits = self.forward_prefill(idx)
 
-                tt_logits = self.forward(idx_cond)
+            tt_logits = ttnn.squeeze(prefill_logits, dim=1)
+            last_logits = tt_logits[:, -1, :]
+
+            logits = ttnn.to_torch(last_logits)
+
+            # Ban BOS
+            if bos_id is not None:
+                logits[:, bos_id] = -1e9
+
+            idx_next = ttnn.argmax(last_logits, dim=-1)
+            idx_next = ttnn.unsqueeze(idx_next, 1)
+            idx_next = ttnn.to_layout(idx_next, ttnn.TILE_LAYOUT)
+
+            if first_token_time is None:
+                first_token_time = time.perf_counter()
+
+            tokens_generated += B
+
+            idx = ttnn.concat([idx, idx_next], dim=1)
+
+            for step in range(max_new_tokens):
+                tt_logits = self.forward(idx_next)
 
                 tt_logits = ttnn.squeeze(tt_logits, dim=1)
                 last_logits = tt_logits[:, -1, :]
 
                 idx_next = ttnn.argmax(last_logits, dim=-1)
+                if eos_id is not None:
+                    next_ids = ttnn.to_torch(idx_next)
+                    if (next_ids == eos_id).all():
+                        break
                 idx_next = ttnn.unsqueeze(idx_next, 1)
 
                 if first_token_time is None:
@@ -266,6 +386,7 @@ class TtGPT(nn.Module):
             tpss.append(tps)
 
         return {
+            "idx": idx,
             "ttft_avg": sum(ttfts) / len(ttfts),
             "tps_avg": sum(tpss) / len(tpss),
             "ttft_runs": ttfts,

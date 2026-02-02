@@ -87,21 +87,33 @@ class TtCausalSelfAttention(nn.Module):
         cache_k = torch.zeros((B, H, T, D))
         cache_v = torch.zeros((B, H, T, D))
 
-        self.k_cache = ttnn.from_torch(
-            cache_k,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+        # self.k_cache = ttnn.from_torch(
+        #     cache_k,
+        #     dtype=ttnn.bfloat16,
+        #     layout=ttnn.TILE_LAYOUT,
+        #     device=self.device,
+        #     memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        # )
 
-        self.v_cache = ttnn.from_torch(
-            cache_v,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+        # self.v_cache = ttnn.from_torch(
+        #     cache_v,
+        #     dtype=ttnn.bfloat16,
+        #     layout=ttnn.TILE_LAYOUT,
+        #     device=self.device,
+        #     memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        # )
+
+        self.layer_past = [
+            ttnn.as_tensor(
+                k_or_v,
+                dtype=self.kv_cache_dtype,
+                layout=ttnn.TILE_LAYOUT,
+                device=self.mesh_device,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
+            )
+            for k_or_v in [cache_k, cache_v]
+        ]
 
     def forward_prefill(self, x):
         x1 = self.c_attn(x)
@@ -119,15 +131,18 @@ class TtCausalSelfAttention(nn.Module):
         k = ttnn.to_layout(k, ttnn.TILE_LAYOUT)
         v = ttnn.to_layout(v, ttnn.TILE_LAYOUT)
 
+        keys = self.layer_past[0]
+        values = self.layer_past[1]
+
         for b in range(B):
             ttnn.fill_cache(
-                self.k_cache,
+                keys,
                 k[b : b + 1],
                 batch_idx=b,
             )
 
             ttnn.fill_cache(
-                self.v_cache,
+                values,
                 v[b : b + 1],
                 batch_idx=b,
             )

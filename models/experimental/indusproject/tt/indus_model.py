@@ -70,7 +70,7 @@ class TtGPT(nn.Module):
 
         self.pos_cache = ttnn.embedding(self.tt_pos_cache, self.tt_wpe_weight)
 
-    def forward(self, idx) -> ttnn.Tensor:
+    def forward(self, idx, current_pos_tensor) -> ttnn.Tensor:
         b, t = idx.shape
         assert (
             t <= self.config.block_size
@@ -85,7 +85,7 @@ class TtGPT(nn.Module):
 
         # pad_mask = self.h[0].attn.make_pad_mask(idx)
         for block in self.h:
-            x = block.forward(x, idx=None, pad_mask=None)
+            x = block.forward(x, idx=None, current_pos_tensor=current_pos_tensor)
         x = self.ln_f(x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
         logits = self.lm_head(x)
 
@@ -161,12 +161,7 @@ class TtGPT(nn.Module):
                 if next_tok == eos_id:
                     break
 
-            # CRITICAL: If you use any intermediate TT tensors,
-            # deallocate them or ensure they are overwritten.
-            # del tt_logits
-
         return idx
-        # return ttnn.to_torch(idx[:, prompt_len:])
 
     def generate_1(
         self,
@@ -236,6 +231,23 @@ class TtGPT(nn.Module):
     ):
         vocab_size = int(self.config.vocab_size)
 
+        B = idx.shape[0]
+        S = idx.shape[1]
+        print(f"seq len = {S}")
+
+        # Track which sequences are finished
+        finished = torch.zeros(B, dtype=torch.bool)
+
+        # prefill_seq_len = get_padded_prefill_len(S)
+        # print(f"prefill len: {prefill_seq_len}")
+        # pad = torch.full(
+        #         (1, prefill_seq_len - S),
+        #         0,
+        #         dtype=torch.long,
+        #         device=idx.device
+        #     )
+        # prefill_ids = torch.cat([idx[:1, :S], pad], dim=1)
+
         # Convert to TT once
         if not isinstance(idx, ttnn.Tensor):
             idx = ttnn.from_torch(
@@ -245,11 +257,6 @@ class TtGPT(nn.Module):
                 layout=ttnn.TILE_LAYOUT,
             )
 
-        B = idx.shape[0]
-
-        # Track which sequences are finished
-        finished = torch.zeros(B, dtype=torch.bool)
-        # self.reset_kv_cache()
         prefill_logits = self.forward_prefill(idx)
 
         tt_logits = ttnn.squeeze(prefill_logits, dim=1)
@@ -261,12 +268,25 @@ class TtGPT(nn.Module):
 
         idx = ttnn.concat([idx, idx_next], dim=1)
         print(idx_next)
+        start_pos = S
 
-        for _ in range(max_new_tokens):
+        for i in range(max_new_tokens):
             idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
 
+            current_pos = torch.tensor([start_pos + i for _ in range(B)])
+            print(f"current pos: {current_pos}")
+            current_pos_tensor = ttnn.from_torch(
+                current_pos,
+                device=self.device,
+                dtype=ttnn.int32,
+                # mesh_mapper=ttnn.ShardTensor2dMesh(
+                #     self.device,
+                #     dims = (None, None),
+                #     mesh_shape=(1,1),
+                # ),
+            )
             # Forward
-            tt_logits = self.forward(idx_next)
+            tt_logits = self.forward(idx_next, current_pos_tensor)
 
             tt_logits = ttnn.squeeze(tt_logits, dim=1)
 

@@ -102,13 +102,14 @@ class TtCausalSelfAttention(nn.Module):
         #     device=self.device,
         #     memory_config=ttnn.DRAM_MEMORY_CONFIG,
         # )
+        self.mesh_device = (1, 1)
 
         self.layer_past = [
             ttnn.as_tensor(
                 k_or_v,
-                dtype=self.kv_cache_dtype,
+                dtype=ttnn.bfloat16,
                 layout=ttnn.TILE_LAYOUT,
-                device=self.mesh_device,
+                mesh_device=self.mesh_device,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
                 mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
             )
@@ -193,14 +194,17 @@ class TtCausalSelfAttention(nn.Module):
 
         pos = self.cur_pos
 
+        keys = self.layer_past[0]
+        values = self.layer_past[1]
+
         # k = ttnn.sharded_to_interleaved(k, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         # v = ttnn.sharded_to_interleaved(v, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
         # k = ttnn.permute(k, (0, 2, 1, 3))
         # v = ttnn.permute(v, (0, 2, 1, 3))
 
-        ttnn.experimental.paged_update_cache(self.k_cache, k, update_idxs=[self.cur_pos], batch_offset=0)
-        ttnn.experimental.paged_update_cache(self.v_cache, v, update_idxs=[self.cur_pos], batch_offset=0)
+        ttnn.experimental.paged_update_cache(keys, k, update_idxs=[self.cur_pos], batch_offset=0)
+        ttnn.experimental.paged_update_cache(values, v, update_idxs=[self.cur_pos], batch_offset=0)
 
         self.cur_pos += 1
 
@@ -209,8 +213,8 @@ class TtCausalSelfAttention(nn.Module):
 
         tt_y = ttnn.transformer.scaled_dot_product_attention_decode(
             input_tensor_q=q,
-            input_tensor_k=self.k_cache,
-            input_tensor_v=self.v_cache,
+            input_tensor_k=keys,
+            input_tensor_v=values,
             is_causal=True,
             cur_pos=[pos],
             memory_config=ttnn.DRAM_MEMORY_CONFIG,

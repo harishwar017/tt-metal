@@ -25,7 +25,12 @@ if (
     store_weights(model_version=model_version, file_name=tt_cache_path, dtype=dtype, base_address=base_address)
 
 
-device = ttnn.device.open_device(device_id=0)
+# device = ttnn.device.open_device(device_id=0)
+mesh_shape = ttnn.MeshShape(1, 1)
+
+# 2. actually OPEN the device using that shape
+# This creates the ttnn._ttnn.multi_device.MeshDevice object
+device = ttnn.open_mesh_device(mesh_shape)
 
 tt_model = indus_model.TtGPT(config, device, tt_cache_path, dtype)
 print("✓ TT Model loaded!")
@@ -79,9 +84,8 @@ print(f"Test input shape: {test_input_ids.shape}")
 
 timings = tt_model.generate_kv(
     idx=test_input_ids,
-    max_new_tokens=12,
+    max_new_tokens=10,
     eos_id=tokenizer.eos_token_id,
-    # bos_id=tokenizer.bos_token_id,
 )
 # print(f"ttft avg: {timings['ttft_avg']}")
 # print(f"tps avg: {timings['tps_avg']}")

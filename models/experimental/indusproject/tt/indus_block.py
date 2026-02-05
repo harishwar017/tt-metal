@@ -44,10 +44,15 @@ class TtBlock(nn.Module):
 
         self.mlp = indus_mlp.TtMLP(f"{base_address}.mlp", self.config, device, tt_cache_path, dtype)
 
-    def forward(self, x: ttnn.Tensor, idx: Optional, pad_mask: Optional) -> ttnn.Tensor:
-        tmp = self.attn.forward(self.ln_1(x, epsilon=1e-5, weight=self.gamma_1, bias=self.beta_1))
-        x = ttnn.add(x, tmp)
+    def forward(self, x: ttnn.Tensor, idx: Optional, seq_lens: Optional) -> ttnn.Tensor:
+        tmp = self.attn.forward(self.ln_1(x, epsilon=1e-5, weight=self.gamma_1, bias=self.beta_1), idx, seq_lens)
 
+        # removing the padding done to q, k, v before sdpa
+        B, H, _, D = tmp.shape
+        S = idx.shape[1]
+        tmp = ttnn.slice(tmp, (0, 0, 0, 0), (B, H, S, D))
+
+        x = ttnn.add(x, tmp)
         tmp = self.mlp.forward(self.ln_2(x, epsilon=1e-5, weight=self.gamma_2, bias=self.beta_2))
         x = ttnn.add(x, tmp)
 

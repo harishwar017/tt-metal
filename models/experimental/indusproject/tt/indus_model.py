@@ -31,6 +31,8 @@ class TtGPT(nn.Module):
         self.gamma = ttnn.load_tensor(tt_cache_path + base_address + ".ln_f.weight" + str(dtype) + ".tensorbin")
         self.gamma = ttnn.to_device(self.gamma, device)
 
+        self.pad_id = config.eos_token_id
+
         wte_torch = torch.load(tt_cache_path + "transformer.wte.weight.pt")
         wpe_torch = torch.load(tt_cache_path + "transformer.wpe.weight.pt")
         # Keep embeddings in ROW_MAJOR as they are lookup tables
@@ -70,91 +72,48 @@ class TtGPT(nn.Module):
 
         self.pos_cache = ttnn.embedding(self.tt_pos_cache, self.tt_wpe_weight)
 
-    def forward(self, idx) -> ttnn.Tensor:
+    def forward(self, idx, seq_lens) -> ttnn.Tensor:
         b, t = idx.shape
-        assert (
-            t <= self.config.block_size
-        ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+
+        # assert (
+        #     t <= self.config.block_size
+        # ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
 
         tok_emb = ttnn.embedding(idx, self.tt_wte_weight)
         pos_emb = self.pos_cache[:, :t, :]
 
         x = ttnn.add(tok_emb, pos_emb)
-        # x = ttnn.unsqueeze(x, dim=1)
+        x = ttnn.unsqueeze(x, dim=1)
         x = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
 
-        # pad_mask = self.h[0].attn.make_pad_mask(idx)
+        # pad_mask = self.h[0].attn.make_pad_mask_torch(idx)
         for block in self.h:
-            x = block.forward(x, idx=None, pad_mask=None)
+            x = block.forward(x, idx=idx, seq_lens=seq_lens)
         x = self.ln_f(x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
         logits = self.lm_head(x)
 
         return logits
 
-    def generate(
-        self,
-        idx: None,
-        max_new_tokens: int = 20,
-        temperature: float = 1.0,
-        eos_id: int = None,
-        do_sample: bool = True,
-        top_k=None,
-    ) -> torch.Tensor:
-        # B = idx.shape[0]
-        vocab_size = int(self.config.vocab_size)
+    def pad_idx_to_32(self, idx):
+        B, S = idx.shape
 
-        # PRE-CALCULATE reciprocal temperature to avoid ttnn.reciprocal in loop
-        if not isinstance(idx, ttnn.Tensor):
-            idx = ttnn.from_torch(
-                idx.to(torch.uint32), device=self.device, dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT
-            )
+        S_new = ((S + 31) // 32) * 32
+        pad_len = S_new - S
 
-        for _ in range(max_new_tokens):
-            idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
+        if pad_len == 0:
+            return idx, S
 
-            # 1. Forward pass (Keep on device)
-            tt_logits = self.forward(idx_cond)
+        pad_extra = ttnn.full((B, pad_len), self.pad_id, dtype=ttnn.uint32, device=self.device, layout=ttnn.TILE_LAYOUT)
+        idx_padded = ttnn.concat([idx, pad_extra], dim=1)
 
-            tt_logits = ttnn.squeeze(tt_logits, dim=1)
-            tt_logits = tt_logits[:, -1, :vocab_size]
-            tt_logits = ttnn.squeeze(tt_logits, dim=1)
-
-            if do_sample:
-                if temperature != 1.0:
-                    logits = logits / max(temperature, 1e-5)
-
-                if top_k is not None:
-                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits[logits < v[:, [-1]]] = -float("Inf")
-
-                probs = torch.softmax(logits, dim=-1)
-                idx_next = torch.multinomial(probs, num_samples=1)
-
-                idx = torch.cat((idx, idx_next), dim=1)
-            else:
-                # Greedy decoding
-                idx_next = ttnn.argmax(tt_logits, dim=-1, keepdim=True)
-                idx = ttnn.concat([idx, idx_next], dim=1)
-
-                next_tok = ttnn.to_torch(idx_next)[0, 0].item()
-                if next_tok == eos_id:
-                    break
-
-            # CRITICAL: If you use any intermediate TT tensors,
-            # deallocate them or ensure they are overwritten.
-            # del tt_logits
-
-        return idx
-        # return ttnn.to_torch(idx[:, prompt_len:])
+        return idx_padded
 
     def generate_1(
         self,
         idx,
+        seq_lens,
         max_new_tokens: int = 20,
-        temperature: float = 1.0,
         eos_id: int = None,
-        do_sample: bool = False,  # keep greedy for now
-        top_k=None,
     ):
         vocab_size = int(self.config.vocab_size)
 
@@ -172,11 +131,13 @@ class TtGPT(nn.Module):
         # Track which sequences are finished
         finished = torch.zeros(B, dtype=torch.bool)
 
-        for _ in range(max_new_tokens):
-            idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
+        for i in range(max_new_tokens):
+            print(f"predicting: {i}")
+            # idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
 
             # Forward
-            tt_logits = self.forward(idx_cond)
+
+            tt_logits = self.forward(idx, seq_lens)
 
             tt_logits = ttnn.squeeze(tt_logits, dim=1)
 

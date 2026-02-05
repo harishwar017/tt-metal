@@ -5,6 +5,7 @@
 import torch.nn as nn
 import ttnn
 from models.common.helper_funcs import Linear
+import torch
 
 
 class TtCausalSelfAttention(nn.Module):
@@ -65,23 +66,74 @@ class TtCausalSelfAttention(nn.Module):
     def const_tensor(self, shape, value):
         return ttnn.full(shape, value, device=self.device, dtype=ttnn.bfloat16)
 
-    def make_pad_mask(self, idx):
-        pad_mask = ttnn.ne(idx, self.pad_id)
+    # def make_pad_mask_torch(self, idx):
+    #     pad_mask = ttnn.ne(idx, self.pad_id)
 
-        pad_mask = ttnn.unsqueeze(pad_mask, 1)
-        pad_mask = ttnn.unsqueeze(pad_mask, 1)
+    #     pad_mask = ttnn.unsqueeze(pad_mask, 1)
+    #     pad_mask = ttnn.unsqueeze(pad_mask, 1)
 
-        return ttnn.to_layout(pad_mask, ttnn.TILE_LAYOUT)
+    #     return pad_mask
 
-    def forward(self, x: ttnn.Tensor) -> ttnn.Tensor:
+    def pad_idx_to_32(self, idx):
+        B, n, S, d = idx.shape
+
+        S_new = ((S + 31) // 32) * 32
+        pad_len = S_new - S
+
+        if pad_len == 0:
+            return idx, S
+
+        pad_extra = ttnn.full(
+            (B, n, pad_len, d), self.pad_id, dtype=ttnn.bfloat16, device=self.device, layout=ttnn.TILE_LAYOUT
+        )
+        idx_padded = ttnn.concat([idx, pad_extra], dim=2)
+
+        return idx_padded
+
+    def build_causal_mask(self, idx):
+        NEG = -1e4  # safer than -inf on TT
+        B = idx.shape[0]
+        S = idx.padded_shape[2]
+
+        # Lower triangular matrix
+        causal = torch.tril(torch.ones((S, S), dtype=torch.bool))
+        causal = causal.unsqueeze(0).unsqueeze(0)
+        causal = causal.expand(B, 1, S, S)
+
+        # Convert to float mask
+        mask = torch.zeros((B, 1, S, S), dtype=torch.bfloat16)
+        mask[~causal] = NEG
+
+        return mask
+
+    def forward(self, x: ttnn.Tensor, idx, seq_lens) -> ttnn.Tensor:
         x1 = self.c_attn(x)
+        # x1 = ttnn.permute(x1, (1,0,2,3))
+        B = x.shape[0]
+
+        attn_mask = self.build_causal_mask(x)
 
         q, k, v = ttnn.experimental.nlp_create_qkv_heads(
             input=x1, input_kv=None, num_heads=self.n_head, num_kv_heads=None, transpose_k_heads=False
         )
         ttnn.deallocate(x1)
 
-        tt_y = ttnn.transformer.scaled_dot_product_attention(q, k, v, is_causal=True)
+        NEG = -1e6
+        for b in range(B):
+            L = idx[b].shape[0] + seq_lens[b].item()
+            attn_mask[b, :, :, L:] = NEG
+            # attn_mask[b, :, L:, :] = NEG
+
+        attn_mask = ttnn.from_torch(
+            attn_mask, device=self.device, layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16  # important
+        )
+
+        attn_mask = ttnn.to_layout(attn_mask, ttnn.TILE_LAYOUT)
+
+        q = self.pad_idx_to_32(q)
+        k = self.pad_idx_to_32(k)
+        v = self.pad_idx_to_32(v)
+        tt_y = ttnn.transformer.scaled_dot_product_attention(q, k, v, is_causal=False, attn_mask=attn_mask)
 
         # Free early
         ttnn.deallocate(q)

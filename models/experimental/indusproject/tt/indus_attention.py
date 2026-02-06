@@ -166,23 +166,19 @@ class TtCausalSelfAttention(nn.Module):
         ttnn.deallocate(x1)
         B = k.shape[0]
 
-        # Make sure layout is interleaved/tile
-        k = ttnn.to_layout(k, ttnn.TILE_LAYOUT)
-        v = ttnn.to_layout(v, ttnn.TILE_LAYOUT)
-
         keys = self.layer_past[0]
         values = self.layer_past[1]
 
         for b in range(B):
             ttnn.fill_cache(
                 keys,
-                k[b : b + 1],
+                k,
                 batch_idx=b,
             )
 
             ttnn.fill_cache(
                 values,
-                v[b : b + 1],
+                v,
                 batch_idx=b,
             )
 
@@ -202,20 +198,6 @@ class TtCausalSelfAttention(nn.Module):
         tt_y = ttnn.experimental.nlp_concat_heads(tt_y, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
         x2 = self.c_proj(tt_y)
-        # output projection
-        # x2 = ttnn.matmul(
-        #     tt_y,
-        #     self.tt_weight_c_proj,   # c_proj weight
-        #     core_grid=None,
-        #     program_config=None,
-        #     # memory_config=ttnn.L1_WIDTH_SHARDED_MEMORY_CONFIG,
-        #     dtype=None,
-        #     # compute_kernel_config=self.li_o_decode_compute_kernel_cfg,
-        # )
-
-        # if self.tt_bias_c_proj is not None:
-        #     x2 = ttnn.add(x2, self.tt_bias_c_proj)
-
         ttnn.deallocate(tt_y)
 
         return x2
@@ -239,12 +221,6 @@ class TtCausalSelfAttention(nn.Module):
         # ttnn.deallocate(x1)
         keys = self.layer_past[0]
         values = self.layer_past[1]
-
-        # k = ttnn.to_layout(k, ttnn.TILE_LAYOUT)
-        # k = ttnn.to_memory_config(k, ttnn.DRAM_MEMORY_CONFIG)
-
-        # v = ttnn.to_layout(v, ttnn.TILE_LAYOUT)
-        # v = ttnn.to_memory_config(v, ttnn.DRAM_MEMORY_CONFIG)
 
         ttnn.experimental.paged_update_cache(keys, k, batch_offset=0, update_idxs_tensor=current_pos_tensor)
         ttnn.experimental.paged_update_cache(values, v, batch_offset=0, update_idxs_tensor=current_pos_tensor)
@@ -275,18 +251,6 @@ class TtCausalSelfAttention(nn.Module):
         tt_y = ttnn.experimental.nlp_concat_heads_decode(tt_y, num_heads=self.n_head)
 
         x2 = self.c_proj(tt_y)
-        # x2 = ttnn.matmul(
-        #     tt_y,
-        #     self.tt_weight_c_proj,
-        #     core_grid=None,
-        #     program_config=self.model_config.get("C_PROJ_PROGCFG", None),
-        #     memory_config=ttnn.L1_WIDTH_SHARDED_MEMORY_CONFIG,
-        #     dtype=None,
-        #     # compute_kernel_config=self.li_o_decode_compute_kernel_cfg,
-        # )
-
-        # if self.tt_bias_c_proj is not None:
-        #     x2 = ttnn.add(x2, self.tt_bias_c_proj)
 
         ttnn.deallocate(tt_y)
 

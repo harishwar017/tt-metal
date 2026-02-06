@@ -2,13 +2,13 @@
 import ttnn
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from models.experimental.indusproject.indusproject_utils import get_tt_cache_path, store_weights
-import models.experimental.indusproject.tt.indus_model as indus_model
+import models.experimental.indusproject.tt.indus_model_copy as indus_model
 from pathlib import Path
 import os
 
 # Load models
-model = AutoModelForCausalLM.from_pretrained("nickmalhotra/ProjectIndus")
-tokenizer = AutoTokenizer.from_pretrained("nickmalhotra/ProjectIndus")
+model = AutoModelForCausalLM.from_pretrained("nickmalhotra/ProjectIndus", local_files_only=True)
+tokenizer = AutoTokenizer.from_pretrained("nickmalhotra/ProjectIndus", local_files_only=True)
 model.eval()
 
 config = model.config
@@ -49,10 +49,11 @@ def format_template(user_prompt):
     return response
 
 
-user_prompt = """भारत के वर्तमान समय में देश की सरकार का नेतृत्व करने वाले, संसद में बहुमत रखने वाली पार्टी के नेता और प्रशासनिक फैसलों में मुख्य भूमिका निभाने वाले प्रधानमंत्री कौन हैं?"""
+user_prompt = """भारत के वर्तमान प्रधानमंत्री कौन हैं?"""
 
 # format_template already returns tokenized input_ids
 test_input_ids = format_template(user_prompt)
+test_input_ids = test_input_ids[:, :32]
 print(f"Test input shape: {test_input_ids.shape}")
 # def format_chat_batch(conversations):
 #     """
@@ -82,7 +83,7 @@ print(f"Test input shape: {test_input_ids.shape}")
 # )
 
 
-timings = tt_model.generate_kv(
+timings = tt_model.generate_1(
     idx=test_input_ids,
     max_new_tokens=10,
     eos_id=tokenizer.eos_token_id,

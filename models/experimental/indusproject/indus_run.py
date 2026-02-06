@@ -2,7 +2,7 @@
 import ttnn
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from models.experimental.indusproject.indusproject_utils import get_tt_cache_path, store_weights
-import models.experimental.indusproject.tt.indus_model_copy as indus_model
+import models.experimental.indusproject.tt.indus_model as indus_model
 from pathlib import Path
 import os
 
@@ -83,7 +83,7 @@ print(f"Test input shape: {test_input_ids.shape}")
 # )
 
 
-timings = tt_model.generate_1(
+timings = tt_model.generate_kv(
     idx=test_input_ids,
     max_new_tokens=10,
     eos_id=tokenizer.eos_token_id,

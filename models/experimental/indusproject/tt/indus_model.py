@@ -113,57 +113,6 @@ class TtGPT(nn.Module):
 
         return logits
 
-    def generate(
-        self,
-        idx: None,
-        max_new_tokens: int = 20,
-        temperature: float = 1.0,
-        eos_id: int = None,
-        do_sample: bool = True,
-        top_k=None,
-    ) -> torch.Tensor:
-        # B = idx.shape[0]
-        vocab_size = int(self.config.vocab_size)
-
-        # PRE-CALCULATE reciprocal temperature to avoid ttnn.reciprocal in loop
-        if not isinstance(idx, ttnn.Tensor):
-            idx = ttnn.from_torch(
-                idx.to(torch.uint32), device=self.device, dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT
-            )
-
-        for _ in range(max_new_tokens):
-            idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
-
-            # 1. Forward pass (Keep on device)
-            tt_logits = self.forward(idx_cond)
-
-            tt_logits = ttnn.squeeze(tt_logits, dim=1)
-            tt_logits = tt_logits[:, -1, :vocab_size]
-            tt_logits = ttnn.squeeze(tt_logits, dim=1)
-
-            if do_sample:
-                if temperature != 1.0:
-                    logits = logits / max(temperature, 1e-5)
-
-                if top_k is not None:
-                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits[logits < v[:, [-1]]] = -float("Inf")
-
-                probs = torch.softmax(logits, dim=-1)
-                idx_next = torch.multinomial(probs, num_samples=1)
-
-                idx = torch.cat((idx, idx_next), dim=1)
-            else:
-                # Greedy decoding
-                idx_next = ttnn.argmax(tt_logits, dim=-1, keepdim=True)
-                idx = ttnn.concat([idx, idx_next], dim=1)
-
-                next_tok = ttnn.to_torch(idx_next)[0, 0].item()
-                if next_tok == eos_id:
-                    break
-
-        return idx
-
     def generate_1(
         self,
         idx,
@@ -193,7 +142,7 @@ class TtGPT(nn.Module):
             idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
 
             # Forward
-            tt_logits = self.forward(idx_cond)
+            tt_logits = self.forward_prefill(idx_cond)
 
             tt_logits = ttnn.squeeze(tt_logits, dim=1)
 

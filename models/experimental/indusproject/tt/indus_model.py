@@ -2,7 +2,6 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-import time
 import torch
 import torch.nn as nn
 import ttnn
@@ -70,7 +69,12 @@ class TtGPT(nn.Module):
 
         self.pos_cache = ttnn.embedding(self.tt_pos_cache, self.tt_wpe_weight)
 
-    def forward(self, idx) -> ttnn.Tensor:
+    def forward_prefill(self, idx, current_pos: int = 0) -> ttnn.Tensor:
+        """
+        Prefill: Process entire prompt and populate KV cache
+        idx: [batch, seq_len] token indices (TTNN tensor)
+        current_pos: starting position (usually 0)
+        """
         b, t = idx.shape
         assert (
             t <= self.config.block_size
@@ -80,74 +84,46 @@ class TtGPT(nn.Module):
         pos_emb = self.pos_cache[:, :t, :]
 
         x = ttnn.add(tok_emb, pos_emb)
-        # x = ttnn.unsqueeze(x, dim=1)
         x = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
 
-        # pad_mask = self.h[0].attn.make_pad_mask(idx)
+        # Pass through transformer blocks
         for block in self.h:
-            x = block.forward(x, idx=None, pad_mask=None)
+            x = block.forward_prefill(x, current_pos=current_pos, idx=None, pad_mask=None)
+
+        x = self.ln_f(x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
+        logits = self.lm_head(x)
+
+        return logits
+
+    def forward_decode(self, idx, current_pos: ttnn.Tensor) -> ttnn.Tensor:
+        """
+        Decode: Process single new token using cached K,V
+        idx: [batch, 1] single token index (TTNN tensor)
+        current_pos: [batch] position tensor
+        """
+        b, t = idx.shape
+        assert t == 1, "Decode should process exactly one token"
+
+        # Get position index for embedding lookup
+        pos_idx = ttnn.to_torch(current_pos)[0].item()
+
+        # Token and position embeddings for single token
+        tok_emb = ttnn.embedding(idx, self.tt_wte_weight)
+        pos_emb = self.pos_cache[:, pos_idx : pos_idx + 1, :]
+
+        x = ttnn.add(tok_emb, pos_emb)
+        x = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
+
+        # Pass through transformer blocks with position tracking
+        for block in self.h:
+            x = block.forward_decode(x, current_pos=current_pos, idx=None, pad_mask=None)
+
         x = self.ln_f(x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
         logits = self.lm_head(x)
 
         return logits
 
     def generate(
-        self,
-        idx: None,
-        max_new_tokens: int = 20,
-        temperature: float = 1.0,
-        eos_id: int = None,
-        do_sample: bool = True,
-        top_k=None,
-    ) -> torch.Tensor:
-        # B = idx.shape[0]
-        vocab_size = int(self.config.vocab_size)
-
-        # PRE-CALCULATE reciprocal temperature to avoid ttnn.reciprocal in loop
-        if not isinstance(idx, ttnn.Tensor):
-            idx = ttnn.from_torch(
-                idx.to(torch.uint32), device=self.device, dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT
-            )
-
-        for _ in range(max_new_tokens):
-            idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
-
-            # 1. Forward pass (Keep on device)
-            tt_logits = self.forward(idx_cond)
-
-            tt_logits = ttnn.squeeze(tt_logits, dim=1)
-            tt_logits = tt_logits[:, -1, :vocab_size]
-            tt_logits = ttnn.squeeze(tt_logits, dim=1)
-
-            if do_sample:
-                if temperature != 1.0:
-                    logits = logits / max(temperature, 1e-5)
-
-                if top_k is not None:
-                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits[logits < v[:, [-1]]] = -float("Inf")
-
-                probs = torch.softmax(logits, dim=-1)
-                idx_next = torch.multinomial(probs, num_samples=1)
-
-                idx = torch.cat((idx, idx_next), dim=1)
-            else:
-                # Greedy decoding
-                idx_next = ttnn.argmax(tt_logits, dim=-1, keepdim=True)
-                idx = ttnn.concat([idx, idx_next], dim=1)
-
-                next_tok = ttnn.to_torch(idx_next)[0, 0].item()
-                if next_tok == eos_id:
-                    break
-
-            # CRITICAL: If you use any intermediate TT tensors,
-            # deallocate them or ensure they are overwritten.
-            # del tt_logits
-
-        return idx
-        # return ttnn.to_torch(idx[:, prompt_len:])
-
-    def generate_1(
         self,
         idx,
         max_new_tokens: int = 20,
@@ -156,6 +132,9 @@ class TtGPT(nn.Module):
         do_sample: bool = False,  # keep greedy for now
         top_k=None,
     ):
+        """
+        Generate tokens autoregressively using KV cache
+        """
         vocab_size = int(self.config.vocab_size)
 
         # Convert to TT once
@@ -168,119 +147,65 @@ class TtGPT(nn.Module):
             )
 
         B = idx.shape[0]
+        prompt_len = idx.shape[1]
 
         # Track which sequences are finished
         finished = torch.zeros(B, dtype=torch.bool)
 
-        for _ in range(max_new_tokens):
-            idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
+        # PREFILL PHASE: Process entire prompt and populate cache
+        tt_logits = self.forward_prefill(idx, current_pos=0)
 
-            # Forward
-            tt_logits = self.forward(idx_cond)
+        # Get logits for last token of prompt
+        tt_logits = ttnn.squeeze(tt_logits, dim=1)
+        last_logits = tt_logits[:, -1, :]  # [B, vocab_size]
+
+        # Sample first token
+        idx_next = ttnn.argmax(last_logits, dim=-1)  # [B]
+        idx_next = ttnn.unsqueeze(idx_next, dim=1)  # [B, 1]
+        idx_next = ttnn.to_layout(idx_next, ttnn.TILE_LAYOUT)
+
+        # Concatenate generated token
+        idx = ttnn.concat([idx, idx_next], dim=1)
+
+        # Initialize current_pos tensor for decode
+        current_pos_torch = torch.tensor([prompt_len], dtype=torch.int32)
+        current_pos = ttnn.from_torch(
+            current_pos_torch,
+            device=self.device,
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
+
+        # DECODE PHASE: Generate remaining tokens one at a time
+        for _ in range(max_new_tokens - 1):
+            # Forward decode with single token
+            tt_logits = self.forward_decode(idx_next, current_pos=current_pos)
 
             tt_logits = ttnn.squeeze(tt_logits, dim=1)
-
-            # Take last timestep: [B, V]
             last_logits = tt_logits[:, -1, :]
 
-            # Argmax: [B]
+            # Sample next token
             idx_next = ttnn.argmax(last_logits, dim=-1)
-
-            # Make [B,1]
             idx_next = ttnn.unsqueeze(idx_next, dim=1)
             idx_next = ttnn.to_layout(idx_next, ttnn.TILE_LAYOUT)
 
+            # Concatenate
             idx = ttnn.concat([idx, idx_next], dim=1)
 
-            # EOS handling (CPU)
+            # Increment position
+            current_pos_torch += 1
+            current_pos = ttnn.from_torch(
+                current_pos_torch,
+                device=self.device,
+                dtype=ttnn.int32,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+            )
+
+            # EOS handling
             if eos_id is not None:
-                next_tok = ttnn.to_torch(idx_next).squeeze(1)  # [B]
-
+                next_tok = ttnn.to_torch(idx_next).squeeze(1)
                 finished |= next_tok == eos_id
-
-                # Stop if all finished
                 if finished.all():
                     break
 
         return idx
-
-    def benchmark_generate(
-        self,
-        idx,
-        max_new_tokens,
-        eos_id,
-        runs=5,
-    ):
-        ttfts = []
-        tpss = []
-
-        # Convert to TT once (TILE layout)
-        if not isinstance(idx, ttnn.Tensor):
-            base_idx = ttnn.from_torch(
-                idx.to(torch.uint32),
-                device=self.device,
-                dtype=ttnn.uint32,
-                layout=ttnn.TILE_LAYOUT,
-            )
-        else:
-            base_idx = idx
-
-        for _ in range(runs):
-            # Reset for each run
-            idx = ttnn.clone(base_idx)
-
-            B = idx.shape[0]
-            # Track which sequences are finished
-            finished = torch.zeros(B, dtype=torch.bool)
-
-            start = time.perf_counter()
-
-            first_token_time = None
-            tokens_generated = 0
-
-            for step in range(max_new_tokens):
-                idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
-
-                tt_logits = self.forward(idx_cond)
-
-                tt_logits = ttnn.squeeze(tt_logits, dim=1)
-                last_logits = tt_logits[:, -1, :]
-
-                idx_next = ttnn.argmax(last_logits, dim=-1)
-                idx_next = ttnn.unsqueeze(idx_next, 1)
-
-                if first_token_time is None:
-                    first_token_time = time.perf_counter()
-
-                tokens_generated += B
-
-                # Safe: both TILE
-                idx_next = ttnn.to_layout(idx_next, ttnn.TILE_LAYOUT)
-                idx = ttnn.concat([idx, idx_next], dim=1)
-
-                # EOS handling (CPU)
-                if eos_id is not None:
-                    next_tok = ttnn.to_torch(idx_next).squeeze(1)  # [B]
-
-                    finished |= next_tok == eos_id
-
-                    # Stop if all finished
-                    if finished.all():
-                        break
-
-            end = time.perf_counter()
-
-            ttft = first_token_time - start
-            total_decode = end - first_token_time
-            tps = tokens_generated / total_decode
-
-            ttfts.append(ttft)
-            tpss.append(tps)
-
-        return {
-            "ttft_avg": sum(ttfts) / len(ttfts),
-            "tps_avg": sum(tpss) / len(tpss),
-            "ttft_runs": ttfts,
-            "tps_runs": tpss,
-            "idx": idx,
-        }

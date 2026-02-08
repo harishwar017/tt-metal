@@ -44,8 +44,25 @@ class TtBlock(nn.Module):
 
         self.mlp = indus_mlp.TtMLP(f"{base_address}.mlp", self.config, device, tt_cache_path, dtype)
 
-    def forward(self, x: ttnn.Tensor, idx: Optional, pad_mask: Optional) -> ttnn.Tensor:
-        tmp = self.attn.forward(self.ln_1(x, epsilon=1e-5, weight=self.gamma_1, bias=self.beta_1))
+    def forward_prefill(
+        self, x: ttnn.Tensor, current_pos: int = 0, idx: Optional = None, pad_mask: Optional = None
+    ) -> ttnn.Tensor:
+        tmp = self.attn.forward_prefill(
+            self.ln_1(x, epsilon=1e-5, weight=self.gamma_1, bias=self.beta_1), current_pos=current_pos
+        )
+        x = ttnn.add(x, tmp)
+
+        tmp = self.mlp.forward(self.ln_2(x, epsilon=1e-5, weight=self.gamma_2, bias=self.beta_2))
+        x = ttnn.add(x, tmp)
+
+        return x
+
+    def forward_decode(
+        self, x: ttnn.Tensor, current_pos: ttnn.Tensor, idx: Optional = None, pad_mask: Optional = None
+    ) -> ttnn.Tensor:
+        tmp = self.attn.forward_decode(  # ← FIX: was calling forward_prefill!
+            self.ln_1(x, epsilon=1e-5, weight=self.gamma_1, bias=self.beta_1), current_pos=current_pos
+        )
         x = ttnn.add(x, tmp)
 
         tmp = self.mlp.forward(self.ln_2(x, epsilon=1e-5, weight=self.gamma_2, bias=self.beta_2))

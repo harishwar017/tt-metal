@@ -70,23 +70,29 @@ class TtGPT(nn.Module):
 
         self.pos_cache = ttnn.embedding(self.tt_pos_cache, self.tt_wpe_weight)
 
-    def forward(self, idx, current_pos_tensor) -> ttnn.Tensor:
+    def forward(self, idx, current_pos_tensor: ttnn.Tensor) -> ttnn.Tensor:
+        """
+        Decode: Process single new token using cached K,V
+        idx: [batch, 1] single token index (TTNN tensor)
+        current_pos: [batch] position tensor
+        """
         b, t = idx.shape
-        assert (
-            t <= self.config.block_size
-        ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        assert t == 1, "Decode should process exactly one token"
 
+        # Get position index for embedding lookup
+        pos_idx = ttnn.to_torch(current_pos_tensor)[0].item()
+
+        # Token and position embeddings for single token
         tok_emb = ttnn.embedding(idx, self.tt_wte_weight)
-        pos_emb = self.pos_cache[:, :t, :]
+        pos_emb = self.pos_cache[:, pos_idx : pos_idx + 1, :]
 
         x = ttnn.add(tok_emb, pos_emb)
-
         x = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
-        x = ttnn.unsqueeze_to_4D(x)
 
-        # pad_mask = self.h[0].attn.make_pad_mask(idx)
+        # Pass through transformer blocks with position tracking
         for block in self.h:
-            x = block.forward(x, idx=None, current_pos_tensor=current_pos_tensor)
+            x = block.forward(x, current_pos_tensor=current_pos_tensor, idx=None)
+
         x = self.ln_f(x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
         logits = self.lm_head(x)
 
@@ -223,7 +229,7 @@ class TtGPT(nn.Module):
         for i in range(max_new_tokens):
             idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
 
-            current_pos = torch.tensor([start_pos + i for _ in range(B)])
+            current_pos = torch.tensor([start_pos + i + 1 for _ in range(B)])
             print(f"current pos: {current_pos}")
             current_pos_tensor = ttnn.from_torch(
                 current_pos,

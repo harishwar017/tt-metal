@@ -9,6 +9,7 @@ import ttnn
 from models.common.helper_funcs import Linear
 import math
 from models.common.utility_functions import is_blackhole
+import os
 
 
 class TtCausalSelfAttention(nn.Module):
@@ -59,11 +60,25 @@ class TtCausalSelfAttention(nn.Module):
             self.tt_weight_c_attn,
             self.tt_bias_c_attn,
         )
+        self.c_attn_decode = Linear(
+            self.config.n_embd,
+            3 * config.n_embd,
+            self.tt_weight_c_attn,
+            self.tt_bias_c_attn,
+            output_mem_config=ttnn.L1_WIDTH_SHARDED_MEMORY_CONFIG,
+        )
         self.c_proj = Linear(
             self.config.n_embd,
             self.config.n_embd,
             self.tt_weight_c_proj,
             self.tt_bias_c_proj,
+        )
+        self.c_proj_decode = Linear(
+            self.config.n_embd,
+            self.config.n_embd,
+            self.tt_weight_c_proj,
+            self.tt_bias_c_proj,
+            output_mem_config=ttnn.L1_WIDTH_SHARDED_MEMORY_CONFIG,
         )
 
         self.init_kv_cache()
@@ -154,8 +169,32 @@ class TtCausalSelfAttention(nn.Module):
             for k_or_v in [cache_k, cache_v]
         ]
 
+    def dump_ttnn_tensor(self, tt_tensor, name, step, out_dir):
+        dir = f"./models/experimental/indusproject/{out_dir}"
+        os.makedirs(dir, exist_ok=True)
+
+        path = os.path.join(dir, f"{name}_{step}")
+
+        # TTNN-native dump (writes metadata + binary)
+        ttnn.dump_tensor(tensor=tt_tensor, file_name=f"{path}.tensorbin")
+
+        print(f"[DUMP] {name} -> {path} | shape={tt_tensor.shape}")
+
+    def dump_tensor(self, tt_tensor, name, step, out_dir):
+        dir = f"./models/experimental/indusproject/{out_dir}"
+        os.makedirs(dir, exist_ok=True)
+
+        path = os.path.join(dir, f"{name}_{step}.tensorbin")
+
+        # TTNN-native dump (writes metadata + binary)
+        tensor = ttnn.to_torch(ttnn.from_device(tt_tensor))
+        torch.save(tensor, path)
+
+        print(f"[DUMP] {name} -> {path} | shape={tensor.shape}")
+
     def forward_prefill(self, x):
         x1 = self.c_attn(x)
+        # self.dump_tensor(x1, "prefill_embed", step="0", out_dir="after_l1/embed")
 
         q, k, v = ttnn.experimental.nlp_create_qkv_heads(
             input=x1,
@@ -163,6 +202,11 @@ class TtCausalSelfAttention(nn.Module):
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             transpose_k_heads=False,
         )
+
+        # self.dump_tensor(q, "only_prefill_q", step="0")
+        # self.dump_tensor(k, "only_prefill_k", step="0")
+        # self.dump_tensor(v, "only_prefill_v", step="0")
+
         ttnn.deallocate(x1)
         B = k.shape[0]
 
@@ -203,12 +247,15 @@ class TtCausalSelfAttention(nn.Module):
         return x2
 
     def forward(self, x: ttnn.Tensor, current_pos_tensor) -> ttnn.Tensor:
-        xqkv_fused = self.c_attn(x)
+        xqkv_fused = self.c_attn_decode(x)
+        step = int(ttnn.to_torch(current_pos_tensor).item())
+        # self.dump_tensor(xqkv_fused, "decode_embed", step, out_dir="after_l1/embed")
 
-        xqkv_fused = ttnn.sharded_to_interleaved(xqkv_fused, ttnn.L1_MEMORY_CONFIG, ttnn.bfloat16)
+        # xqkv_fused = ttnn.sharded_to_interleaved(xqkv_fused, ttnn.L1_MEMORY_CONFIG, ttnn.bfloat16)
 
         fqkv_shape = xqkv_fused.shape
         xqkv_fused = ttnn.reshape(xqkv_fused, (1, 1, 1, fqkv_shape[3]), (1, 1, 32, fqkv_shape[3]))
+        # self.dump_tensor(xqkv_fused, "decode_embed_reshaped", step, out_dir="after_l1/embed")
 
         decode_cfg = self.model_config["CREATE_QKV_DECODE_SHARD"]()
         q, k, v = ttnn.experimental.nlp_create_qkv_heads_decode(
@@ -217,6 +264,10 @@ class TtCausalSelfAttention(nn.Module):
             num_kv_heads=self.n_head,
             memory_config=decode_cfg,
         )
+
+        # self.dump_tensor(q, "decode_q_final", step)
+        # self.dump_tensor(k, "decode_k_final", step)
+        # self.dump_tensor(v, "decode_v_final", step)
 
         # ttnn.deallocate(x1)
         keys = self.layer_past[0]
@@ -250,7 +301,7 @@ class TtCausalSelfAttention(nn.Module):
 
         tt_y = ttnn.experimental.nlp_concat_heads_decode(tt_y, num_heads=self.n_head)
 
-        x2 = self.c_proj(tt_y)
+        x2 = self.c_proj_decode(tt_y)
 
         ttnn.deallocate(tt_y)
 

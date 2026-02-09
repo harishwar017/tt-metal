@@ -229,7 +229,7 @@ class TtGPT(nn.Module):
         for i in range(max_new_tokens):
             idx_cond = idx if idx.shape[1] <= self.config.block_size else idx[:, -self.config.block_size :]
 
-            current_pos = torch.tensor([start_pos + i + 1 for _ in range(B)])
+            current_pos = torch.tensor([start_pos + i for _ in range(B)])
             print(f"current pos: {current_pos}")
             current_pos_tensor = ttnn.from_torch(
                 current_pos,

@@ -82,7 +82,6 @@ print(f"Test input shape: {test_input_ids.shape}")
 #     eos_id=tokenizer.eos_token_id
 # )
 
-
 timings = tt_model.generate_kv(
     idx=test_input_ids,
     max_new_tokens=10,

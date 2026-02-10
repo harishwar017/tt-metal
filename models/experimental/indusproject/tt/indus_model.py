@@ -84,6 +84,7 @@ class TtGPT(nn.Module):
         pos_emb = self.pos_cache[:, :t, :]
 
         x = ttnn.add(tok_emb, pos_emb)
+        x = ttnn.unsqueeze(x, dim=1)
         x = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
 
         # Pass through transformer blocks
@@ -112,6 +113,7 @@ class TtGPT(nn.Module):
         pos_emb = self.pos_cache[:, pos_idx : pos_idx + 1, :]
 
         x = ttnn.add(tok_emb, pos_emb)
+        x = ttnn.unsqueeze(x, dim=1)
         x = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
 
         # Pass through transformer blocks with position tracking

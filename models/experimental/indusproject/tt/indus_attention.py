@@ -69,10 +69,10 @@ class TtCausalSelfAttention(nn.Module):
 
     def init_kv_cache(self):
         """Initialize KV cache for incremental decoding"""
-        batch_size = 1  # Single user initially
+        batch_size = 2  # Single user initially
 
-        cache_k = torch.zeros((batch_size, self.n_head, self.block_size, self.head_dim))
-        cache_v = torch.zeros((batch_size, self.n_head, self.block_size, self.head_dim))
+        cache_k = torch.zeros((batch_size, self.n_head, 1, self.head_dim))
+        cache_v = torch.zeros((batch_size, self.n_head, 1, self.head_dim))
 
         # Convert to TTNN tensors in DRAM
         self.layer_past = [
@@ -106,9 +106,12 @@ class TtCausalSelfAttention(nn.Module):
         keys = self.layer_past[0]
         values = self.layer_past[1]
 
-        # Use ttnn.fill_cache to populate cache at batch index 0
-        ttnn.fill_cache(keys, k, 0)
-        ttnn.fill_cache(values, v, 0)
+        keys_updated = ttnn.concat([keys, k], dim=2)
+        values_updated = ttnn.concat([values, v], dim=2)
+
+        # Update the cache references
+        self.layer_past[0] = keys_updated
+        self.layer_past[1] = values_updated
 
         # SDPA with full prompt (causal masking for prompt)
         tt_y = ttnn.transformer.scaled_dot_product_attention(q, k, v, is_causal=True)
@@ -127,6 +130,22 @@ class TtCausalSelfAttention(nn.Module):
 
         return x2
 
+    def build_causal_mask(self, idx):
+        NEG = -1e4  # safer than -inf on TT
+        B = idx.shape[0]
+        S = idx.padded_shape[2]
+
+        # Lower triangular matrix
+        causal = torch.tril(torch.ones((S, S), dtype=torch.bool))
+        causal = causal.unsqueeze(0).unsqueeze(0)
+        causal = causal.expand(B, 1, S, S)
+
+        # Convert to float mask
+        mask = torch.zeros((B, 1, S, S), dtype=torch.bfloat16)
+        mask[~causal] = NEG
+
+        return mask
+
     def forward_decode(self, x: ttnn.Tensor, current_pos: ttnn.Tensor) -> ttnn.Tensor:
         """
         Decode: Process single new token using cached K,V
@@ -140,73 +159,31 @@ class TtCausalSelfAttention(nn.Module):
             input=x1, input_kv=None, num_heads=self.n_head, num_kv_heads=None, transpose_k_heads=False
         )
         ttnn.deallocate(x1)
+        # Get current position as integer for cache update
+        pos_int = ttnn.to_torch(current_pos)[0].item()
 
         # Update cache at current position with new K,V
         keys = self.layer_past[0]
         values = self.layer_past[1]
 
-        # Get current position as integer for cache update
-        pos_int = ttnn.to_torch(current_pos)[0].item()
-
-        # Manually update cache by copying K,V at the current position
-        # Convert k,v to torch, update cache, convert back
-        k_torch = ttnn.to_torch(k)  # [batch, n_heads, 1, head_dim]
-        v_torch = ttnn.to_torch(v)
-        keys_torch = ttnn.to_torch(keys)  # [batch, n_heads, max_seq_len, head_dim]
-        values_torch = ttnn.to_torch(values)
-
-        # Update at position pos_int
-        keys_torch[:, :, pos_int : pos_int + 1, :] = k_torch
-        values_torch[:, :, pos_int : pos_int + 1, :] = v_torch
-
-        # Convert back to ttnn
-        keys_updated = ttnn.from_torch(
-            keys_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        values_updated = ttnn.from_torch(
-            values_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+        keys_updated = ttnn.concat([keys, k], dim=2)
+        values_updated = ttnn.concat([values, v], dim=2)
 
         # Update the cache references
         self.layer_past[0] = keys_updated
         self.layer_past[1] = values_updated
 
+        # SDPA with cached K,V (causal not needed since we only have past)
+        tt_y = ttnn.transformer.scaled_dot_product_attention(q, keys_updated, values_updated, is_causal=False)
+
         ttnn.deallocate(k)
         ttnn.deallocate(v)
-        ttnn.deallocate(keys)
-        ttnn.deallocate(values)
-
-        # Extract cached K,V up to current position for attention
-        keys_slice = keys_torch[:, :, : pos_int + 1, :]
-        values_slice = values_torch[:, :, : pos_int + 1, :]
-
-        k_cached = ttnn.from_torch(
-            keys_slice,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.device,
-        )
-        v_cached = ttnn.from_torch(
-            values_slice,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=self.device,
-        )
-
-        # SDPA with cached K,V (causal not needed since we only have past)
-        tt_y = ttnn.transformer.scaled_dot_product_attention(q, k_cached, v_cached, is_causal=False)
-
         ttnn.deallocate(q)
-        ttnn.deallocate(k_cached)
-        ttnn.deallocate(v_cached)
+
+        # ttnn.deallocate(keys)
+        # ttnn.deallocate(values)
+        # ttnn.deallocate(keys_updated)
+        # ttnn.deallocate(values_updated)
 
         # Regular concat (works for decode too)
         tt_y = ttnn.experimental.nlp_concat_heads(tt_y)

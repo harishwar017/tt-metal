@@ -10,6 +10,7 @@ from models.common.helper_funcs import Linear
 import math
 from models.common.utility_functions import is_blackhole
 import os
+from typing import Tuple
 
 
 class TtCausalSelfAttention(nn.Module):
@@ -20,20 +21,58 @@ class TtCausalSelfAttention(nn.Module):
         self.config = config
         self.block_size = 1024
         self.pad_id = config.eos_token_id
+        self.dim = config.n_embd  # Use config dimension, not hardcoded!
+        self.tile_size = 32
 
         self.device = device
+        self.dram_grid_size = device.dram_grid_size() if device else None
+        self.cluster_shape = list(device.shape) if device is not None else None
         # Get the weights
         self.tt_weight_c_attn = ttnn.load_tensor(
             tt_cache_path + base_address + ".c_attn.weight" + str(dtype) + ".tensorbin",
             device=device,
         )
+        self.dram_weight_grid = ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(
+                    ttnn.CoreCoord(0, 0),
+                    ttnn.CoreCoord(self.dram_grid_size.x - 1, self.dram_grid_size.y - 1),
+                )
+            }
+        )
+        self.n_head = self.config.n_head
+        self.n_embd = self.config.n_embd
+        self.head_dim = self.n_embd // self.n_head
+        self.num_devices = 1
+        self.n_kv_heads = self.n_head
+        self.qkv_size = self.head_dim * (3 * self.n_head)
+        # # Convert to torch to check shape and prepare for DRAM sharding
+        self.tt_weight_c_attn_temp = ttnn.to_torch(self.tt_weight_c_attn)
+
+        shape = self.tt_weight_c_attn.shape
+
+        # Create shard config matching the final shape
+        wqkv_mem_config = self.create_dram_sharded_mem_config(shape[-2], shape[-1])
+
+        self.wqkv = ttnn.as_tensor(
+            self.tt_weight_c_attn_temp,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            mesh_mapper=ttnn.ShardTensor2dMesh(device, dims=(2, 3), mesh_shape=self.cluster_shape),
+            memory_config=wqkv_mem_config,
+        )
+
+        self.tt_weight_c_attn_decode = self.wqkv
+
+        # Transpose the original weight for prefill mode Linear helper
+        # Linear expects weight as [out_features, in_features] = [6144, 2048]
+        self.tt_weight_c_attn = ttnn.transpose(self.tt_weight_c_attn, -2, -1)
 
         self.tt_weight_c_proj = ttnn.load_tensor(
             tt_cache_path + base_address + ".c_proj.weight" + str(dtype) + ".tensorbin",
             device=device,
         )
-
-        self.tt_weight_c_attn = ttnn.transpose(self.tt_weight_c_attn, -2, -1)
         self.tt_weight_c_proj = ttnn.transpose(self.tt_weight_c_proj, -2, -1)
 
         # Load biases
@@ -47,9 +86,6 @@ class TtCausalSelfAttention(nn.Module):
             device=device,
         )
 
-        self.n_head = self.config.n_head
-        self.n_embd = self.config.n_embd
-
         ones = ttnn.ones([1, 1, self.block_size, self.block_size], device=self.device, dtype=dtype)
         ones = ttnn.to_layout(ones, ttnn.TILE_LAYOUT)
         self.tt_bias = ttnn.tril(ones)
@@ -60,13 +96,13 @@ class TtCausalSelfAttention(nn.Module):
             self.tt_weight_c_attn,
             self.tt_bias_c_attn,
         )
-        self.c_attn_decode = Linear(
-            self.config.n_embd,
-            3 * config.n_embd,
-            self.tt_weight_c_attn,
-            self.tt_bias_c_attn,
-            output_mem_config=ttnn.L1_WIDTH_SHARDED_MEMORY_CONFIG,
-        )
+        # self.c_attn_decode = Linear(
+        #     self.config.n_embd,
+        #     3 * config.n_embd,
+        #     self.tt_weight_c_attn,
+        #     self.tt_bias_c_attn,
+        #     output_mem_config=ttnn.L1_WIDTH_SHARDED_MEMORY_CONFIG,
+        # )
         self.c_proj = Linear(
             self.config.n_embd,
             self.config.n_embd,
@@ -82,7 +118,6 @@ class TtCausalSelfAttention(nn.Module):
         )
 
         self.init_kv_cache()
-        self.head_dim = self.n_embd // self.n_head
 
         # KV position (host-side)
         self.cur_pos = 0
@@ -127,16 +162,131 @@ class TtCausalSelfAttention(nn.Module):
             q_chunk_size=128 if is_bh else 256,
             k_chunk_size=128 if is_bh else 256,
         )
+        self.max_batch_size = 1
 
-        # self.model_config["WO_PREFILL_PROGCFG"] = lambda seq_len: self.matmul_config(
-        #         m=num_rows(seq_len),
-        #         k=k_dim,
-        #         n=n_dim,
-        #         grid_size=self.find_prefill_grid(prefill_rows, k_dim // self.tile_size),
-        #         in0_block_w=1 if self.is_galaxy else None,
-        #         fuse_batch=seq_len <= 1024,
-        #         per_core_N=math.ceil(n_dim / (self.tile_size * dram_shard_grid_width)) if dram_sharded_wo else None,
-        #     )
+        self.tile_padded_batch_rows = self.tile_size * int(math.ceil(self.max_batch_size / self.tile_size))
+
+        # For DRAM-sharded matmul, use the DRAM grid size (not compute grid)
+        # The weight is sharded across DRAM cores (8 cores in a row)
+        dram_num_cores = self.dram_grid_size.x  # 8 cores
+
+        self.model_config["XQKV_DECODE_PROGCFG"] = lambda: (
+            self.dram_matmul_config(
+                m=self.tile_padded_batch_rows,
+                k=self.dim,
+                n=self.qkv_size // self.num_devices,
+                num_cores=dram_num_cores,  # Must match weight's shard grid
+            )
+        )
+
+        residual_grid = self.dram_shard_core_grid_for_k(self.dim // self.num_devices)
+        self.model_config["DECODE_RESIDUAL_MEMCFG"] = lambda: (
+            ttnn.create_sharded_memory_config(
+                (
+                    self.tile_padded_batch_rows,
+                    self.dim // residual_grid.num_cores // self.num_devices,
+                ),
+                residual_grid,
+                ttnn.ShardStrategy.WIDTH,
+                ttnn.ShardOrientation.ROW_MAJOR,
+                use_height_and_width_as_shard_shape=True,
+            )
+        )
+
+    def create_dram_sharded_mem_config(self, k, n):
+        """Create DRAM-sharded memory config for width-sharded tensors"""
+        dram_cores = self.dram_grid_size.x  # WH has 12 dram cores, P150 has 8, P100 has 7
+        assert self.dram_grid_size.y == 1, "Current dram sharding assumes y dim is 1"
+        padded_size = math.ceil(n / (self.tile_size * dram_cores)) * (self.tile_size * dram_cores)
+        shard_spec = ttnn.ShardSpec(
+            self.dram_weight_grid, (k, padded_size // dram_cores), ttnn.ShardOrientation.ROW_MAJOR
+        )
+        return ttnn.MemoryConfig(ttnn.TensorMemoryLayout.WIDTH_SHARDED, ttnn.BufferType.DRAM, shard_spec)
+
+    def find_largest_divisor(self, n, max_divisor=8):
+        for i in range(max_divisor, 0, -1):
+            if n % i == 0:
+                return i
+        return 1  # Fallback to 1 if no divisor found
+
+    def dram_shard_core_grid_for_k(self, k: int) -> Tuple[int, int]:
+        rows, cols = self.find_grid(k // self.tile_size)
+        return ttnn.CoreGrid(x=cols, y=rows)
+
+    def find_grid_k_n(self, K, N):
+        max_rows = 8
+        max_cols = 8  # Maximum number of rows or columns
+        max_cores = max_rows * max_cols  # Maximum number of cores
+
+        # Find all possible numbers of cores that divide N and are less than or equal to max_cores
+        possible_cores = [c for c in range(1, max_cores + 1) if K % c == 0 and N % c == 0]
+        possible_cores.sort(reverse=True)  # Start checking from the largest number of cores
+
+        for cores in possible_cores:
+            # Try to find a grid configuration with the current number of cores
+            for rows in range(1, max_rows + 1):
+                if cores % rows == 0:
+                    cols = cores // rows
+                    if cols <= max_cols:
+                        return rows, cols
+
+        # If no configuration is found, assert an error
+        raise AssertionError(
+            f"Cannot find a grid configuration such that both {K} and {N} tiles evenly divide into cores of max size {max_rows}x{max_cols}."
+        )
+
+    def find_grid(self, N):
+        max_rows = 8
+        max_cols = 8
+        max_cores = max_rows * max_cols
+
+        # Find all possible numbers of cores that divide N and are less than or equal to max_cores
+        target = 32
+        possible_cores = [k for k in range(1, max_cores + 1) if N % k == 0]
+        possible_cores.sort(key=lambda x: abs(x - target))  # Sort by closest to target
+
+        for cores in possible_cores:
+            # Try to find a grid configuration with the current number of cores
+            for rows in range(1, max_rows + 1):
+                if cores % rows == 0:
+                    cols = cores // rows
+                    if cols <= max_cols:
+                        return rows, cols
+
+        # If no configuration is found, assert an error
+        raise AssertionError(
+            f"Cannot find a grid configuration for {N} tiles that evenly divides into {max_cores} cores of max size {max_rows}x{max_cols}."
+        )
+
+    def dram_shard_core_grid_for_k_and_n(self, k: int, n: int) -> Tuple[int, int]:
+        rows, cols = self.find_grid_k_n(k // self.tile_size, n // self.tile_size)
+        return ttnn.CoreGrid(x=cols, y=rows)
+
+    def dram_matmul_config(self, m: int, k: int, n: int, num_cores=None, fused_activation=None):
+        # in0_block_w must evenly divide k and be no larger than tile_size * num_cores
+        if num_cores is None:
+            # num_cores = self.dram_shard_core_grid_for_k(k).num_cores
+            num_cores = self.dram_shard_core_grid_for_k_and_n(k, n).num_cores
+            assert (
+                k % (self.tile_size * num_cores) == 0
+            ), f"k must be divisible by tile_size * num_cores: {k} % {self.tile_size * num_cores} != 0"
+            # assert n % (self.tile_size * num_cores) == 0, f"n must be divisible by tile_size * num_cores: {n} % {self.tile_size * num_cores} != 0"
+        return ttnn.MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig(
+            in0_block_w=self.find_largest_divisor(k // (self.tile_size * num_cores)),
+            per_core_M=math.ceil(m / self.tile_size),
+            per_core_N=math.ceil(n / (self.tile_size * num_cores)),
+            fused_activation=fused_activation,
+        )
+
+    def _transform_decode_inputs_device(self, tokens):
+        # tt_tokens = self.embd(tokens)
+        tt_tokens = ttnn.unsqueeze_to_4D(tokens)
+        mem_config = self.model_config["DECODE_RESIDUAL_MEMCFG"]()
+        tt_tokens = ttnn.to_memory_config(
+            tt_tokens,
+            mem_config,
+        )
+        return tt_tokens
 
     def num_to_corerange(self, x):
         assert x < 8 or x % 8 == 0
@@ -247,17 +397,45 @@ class TtCausalSelfAttention(nn.Module):
         return x2
 
     def forward(self, x: ttnn.Tensor, current_pos_tensor) -> ttnn.Tensor:
-        xqkv_fused = self.c_attn_decode(x)
+        x_embed = self._transform_decode_inputs_device(x)
+
+        # QKV linear layer with DRAM-sharded weight
+        prog_config = self.model_config["XQKV_DECODE_PROGCFG"]()
+        xqkv_fused_sharded = ttnn.linear(
+            x_embed,
+            self.tt_weight_c_attn_decode,
+            memory_config=ttnn.L1_WIDTH_SHARDED_MEMORY_CONFIG,
+            program_config=prog_config,
+            dtype=ttnn.bfloat16,
+        )
+
+        # Add bias - expand bias to match batch dimension
+        # Get the actual batch size from the sharded output
+        batch_size = xqkv_fused_sharded.shape[-2]
+        bias_expanded = ttnn.to_torch(self.tt_bias_c_attn).unsqueeze(0).expand(batch_size, -1)
+        bias_tensor = ttnn.from_torch(
+            bias_expanded,
+            device=self.device,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+        )
+        xqkv_fused_sharded = xqkv_fused_sharded + bias_tensor
+        ttnn.deallocate(bias_tensor)
+
         step = int(ttnn.to_torch(current_pos_tensor).item())
-        # self.dump_tensor(xqkv_fused, "decode_embed", step, out_dir="after_l1/embed")
+        # self.dump_tensor(xqkv_fused_sharded, "decode_embed", step, out_dir="after_l1/embed")
 
-        # xqkv_fused = ttnn.sharded_to_interleaved(xqkv_fused, ttnn.L1_MEMORY_CONFIG, ttnn.bfloat16)
+        # Convert from sharded to interleaved for reshape
+        xqkv_fused = ttnn.sharded_to_interleaved(xqkv_fused_sharded, ttnn.L1_MEMORY_CONFIG, ttnn.bfloat16)
+        ttnn.deallocate(xqkv_fused_sharded)
 
+        # Reshape for nlp_create_qkv_heads_decode: track true unpadded batch in shape
         fqkv_shape = xqkv_fused.shape
-        xqkv_fused = ttnn.reshape(xqkv_fused, (1, 1, 1, fqkv_shape[3]), (1, 1, 32, fqkv_shape[3]))
+        xqkv_fused = ttnn.reshape(xqkv_fused, (1, 1, self.max_batch_size, fqkv_shape[3]), (1, 1, 32, fqkv_shape[3]))
         # self.dump_tensor(xqkv_fused, "decode_embed_reshaped", step, out_dir="after_l1/embed")
 
         decode_cfg = self.model_config["CREATE_QKV_DECODE_SHARD"]()
+
         q, k, v = ttnn.experimental.nlp_create_qkv_heads_decode(
             input_tensor=xqkv_fused,
             num_heads=self.n_head,

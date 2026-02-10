@@ -57,12 +57,14 @@ class TtBlock(nn.Module):
 
         return x
 
-    def forward_decode(
-        self, x: ttnn.Tensor, current_pos: ttnn.Tensor, idx: Optional = None, pad_mask: Optional = None
-    ) -> ttnn.Tensor:
+    def forward_decode(self, x: ttnn.Tensor, current_pos: ttnn.Tensor, seq_lens=None) -> ttnn.Tensor:
         tmp = self.attn.forward_decode(  # ← FIX: was calling forward_prefill!
-            self.ln_1(x, epsilon=1e-5, weight=self.gamma_1, bias=self.beta_1), current_pos=current_pos
+            self.ln_1(x, epsilon=1e-5, weight=self.gamma_1, bias=self.beta_1),
+            current_pos=current_pos,
+            seq_lens=seq_lens,
         )
+        B, H, _, D = tmp.shape
+        tmp = ttnn.slice(tmp, (0, 0, 0, 0), (B, H, 1, D))
         x = ttnn.add(x, tmp)
 
         tmp = self.mlp.forward(self.ln_2(x, epsilon=1e-5, weight=self.gamma_2, bias=self.beta_2))

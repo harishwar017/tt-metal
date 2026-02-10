@@ -102,7 +102,7 @@ def format_template_batch(user_prompts):
     )
 
     max_len = padded.shape[1]
-    seq_lens = max_len - seq_lens
+    # seq_lens = max_len - seq_lens
     print(f"seq_len {seq_lens}")
     print(f"paded_shape:{padded.shape} ")
 
@@ -111,11 +111,37 @@ def format_template_batch(user_prompts):
 
 # --------- Batch of prompts ----------
 user_prompts = [
-    # "दिल्ली किस नदी के किनारे स्थित है??",
-    # "ताजमहल कहाँ स्थित है?",
+    "दिल्ली किस नदी के किनारे स्थित है??",
+    "ताजमहल कहाँ स्थित है?",
     "भारत के वर्तमान प्रधानमंत्री कौन हैं?",
-    # "भारत के वर्तमान प्रधानमंत्री कौन हैं?",
-    # "दिल्ली किस नदी के किनारे स्थित है??",
+    "भारत के वर्तमान प्रधानमंत्री कौन हैं?",
+    "दिल्ली किस नदी के किनारे स्थित है?",
+    "भारत की राजधानी क्या है?",
+    "दिल्ली किस नदी के किनारे स्थित है?",
+    "भारत की राजधानी क्या है?",
+    "दिल्ली किस नदी के किनारे स्थित है??",
+    "ताजमहल कहाँ स्थित है?",
+    "भारत के वर्तमान प्रधानमंत्री कौन हैं?",
+    "भारत के वर्तमान प्रधानमंत्री कौन हैं?",
+    "दिल्ली किस नदी के किनारे स्थित है?",
+    "भारत की राजधानी क्या है?",
+    "दिल्ली किस नदी के किनारे स्थित है?",
+    "भारत की राजधानी क्या है?",
+    "दिल्ली किस नदी के किनारे स्थित है??",
+    "ताजमहल कहाँ स्थित है?",
+    "भारत के वर्तमान प्रधानमंत्री कौन हैं?",
+    "भारत के वर्तमान प्रधानमंत्री कौन हैं?",
+    "दिल्ली किस नदी के किनारे स्थित है?",
+    "भारत की राजधानी क्या है?",
+    "दिल्ली किस नदी के किनारे स्थित है?",
+    "भारत की राजधानी क्या है?",
+    "दिल्ली किस नदी के किनारे स्थित है??",
+    "ताजमहल कहाँ स्थित है?",
+    "भारत के वर्तमान प्रधानमंत्री कौन हैं?",
+    "भारत के वर्तमान प्रधानमंत्री कौन हैं?",
+    "दिल्ली किस नदी के किनारे स्थित है?",
+    "भारत की राजधानी क्या है?",
+    "दिल्ली किस नदी के किनारे स्थित है?",
     "भारत की राजधानी क्या है?",
 ]
 
@@ -127,10 +153,8 @@ print("Prompts:", user_prompts)
 
 
 # --------- Generate ----------
-# output_ids = tt_model.generate(
-#     idx=test_input_ids, max_new_tokens=12, eos_id=tokenizer.eos_token_id, seq_lens=seq_lens
-# )
-output_ids = tt_model.generate(idx=test_input_ids, max_new_tokens=12, eos_id=tokenizer.eos_token_id)
+output_ids = tt_model.generate(idx=test_input_ids, max_new_tokens=12, eos_id=tokenizer.eos_token_id, seq_lens=seq_lens)
+# output_ids = tt_model.generate(idx=test_input_ids, max_new_tokens=12, eos_id=tokenizer.eos_token_id)
 # # Convert to torch
 output_ids = ttnn.to_torch(output_ids)
 

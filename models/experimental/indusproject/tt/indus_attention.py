@@ -69,7 +69,7 @@ class TtCausalSelfAttention(nn.Module):
 
     def init_kv_cache(self):
         """Initialize KV cache for incremental decoding"""
-        batch_size = 2  # Single user initially
+        batch_size = 32  # change manually
 
         cache_k = torch.zeros((batch_size, self.n_head, 1, self.head_dim))
         cache_v = torch.zeros((batch_size, self.n_head, 1, self.head_dim))
@@ -146,21 +146,73 @@ class TtCausalSelfAttention(nn.Module):
 
         return mask
 
-    def forward_decode(self, x: ttnn.Tensor, current_pos: ttnn.Tensor) -> ttnn.Tensor:
+    def pad_idx_to_32(self, idx):
+        B, n, S, d = idx.shape
+
+        S_new = ((S + 31) // 32) * 32
+        pad_len = S_new - S
+
+        if pad_len == 0:
+            return idx, S
+
+        pad_extra = ttnn.full(
+            (B, n, pad_len, d), self.pad_id, dtype=ttnn.bfloat16, device=self.device, layout=ttnn.TILE_LAYOUT
+        )
+        idx_padded = ttnn.concat([idx, pad_extra], dim=2)
+
+        return idx_padded
+
+    def build_padding_mask(self, x, lengths, pos_int):
+        max_len = lengths.max().item()
+
+        NEG = -1e4  # TT-safe
+
+        B = lengths.shape[0]
+        S = pos_int
+        S_new = ((S + 31) // 32) * 32
+
+        # [B, max_len]
+        positions = torch.arange(max_len).unsqueeze(0).expand(B, max_len)
+
+        # True = valid token
+        valid = positions < lengths.unsqueeze(1)
+
+        # Convert to additive mask
+        mask = torch.zeros((B, 1, 1, max_len), dtype=torch.bfloat16)
+        mask[~valid.unsqueeze(1).unsqueeze(1)] = NEG
+
+        extra = torch.zeros(B, 1, 1, pos_int - max_len)
+        mask = torch.cat((mask, extra), dim=3)
+
+        extra = torch.zeros(B, 1, S_new - mask.shape[2], mask.shape[3]) + NEG
+        mask = torch.cat((mask, extra), dim=2)
+
+        extra = torch.zeros(B, 1, mask.shape[2], S_new - mask.shape[3]) + NEG
+        mask = torch.cat((mask, extra), dim=3)
+
+        return mask
+
+    def forward_decode(self, x: ttnn.Tensor, current_pos: ttnn.Tensor, seq_lens) -> ttnn.Tensor:
         """
         Decode: Process single new token using cached K,V
         x: [batch, 1, dim] - single new token
         current_pos: [batch] - current position tensor
         """
         x1 = self.c_attn(x)
-
-        # Use regular QKV head creation (works for single token)
         q, k, v = ttnn.experimental.nlp_create_qkv_heads(
             input=x1, input_kv=None, num_heads=self.n_head, num_kv_heads=None, transpose_k_heads=False
         )
         ttnn.deallocate(x1)
+
         # Get current position as integer for cache update
         pos_int = ttnn.to_torch(current_pos)[0].item()
+        pos_int += 1
+        attn_mask = self.build_padding_mask(x, seq_lens, pos_int)
+        attn_mask = ttnn.from_torch(
+            attn_mask, device=self.device, layout=ttnn.ROW_MAJOR_LAYOUT, dtype=ttnn.bfloat16  # important
+        )
+
+        attn_mask = ttnn.to_layout(attn_mask, ttnn.TILE_LAYOUT)
 
         # Update cache at current position with new K,V
         keys = self.layer_past[0]
@@ -173,8 +225,12 @@ class TtCausalSelfAttention(nn.Module):
         self.layer_past[0] = keys_updated
         self.layer_past[1] = values_updated
 
+        q_new = self.pad_idx_to_32(q)
+        k_new = self.pad_idx_to_32(keys_updated)
+        v_new = self.pad_idx_to_32(values_updated)
+
         # SDPA with cached K,V (causal not needed since we only have past)
-        tt_y = ttnn.transformer.scaled_dot_product_attention(q, keys_updated, values_updated, is_causal=False)
+        tt_y = ttnn.transformer.scaled_dot_product_attention(q_new, k_new, v_new, is_causal=False, attn_mask=attn_mask)
 
         ttnn.deallocate(k)
         ttnn.deallocate(v)

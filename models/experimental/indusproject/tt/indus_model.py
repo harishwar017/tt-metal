@@ -96,7 +96,7 @@ class TtGPT(nn.Module):
 
         return logits
 
-    def forward_decode(self, idx, current_pos: ttnn.Tensor) -> ttnn.Tensor:
+    def forward_decode(self, idx, current_pos, seq_lens) -> ttnn.Tensor:
         """
         Decode: Process single new token using cached K,V
         idx: [batch, 1] single token index (TTNN tensor)
@@ -118,7 +118,7 @@ class TtGPT(nn.Module):
 
         # Pass through transformer blocks with position tracking
         for block in self.h:
-            x = block.forward_decode(x, current_pos=current_pos, idx=None, pad_mask=None)
+            x = block.forward_decode(x, current_pos=current_pos, seq_lens=seq_lens)
 
         x = self.ln_f(x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
         logits = self.lm_head(x)
@@ -128,6 +128,7 @@ class TtGPT(nn.Module):
     def generate(
         self,
         idx,
+        seq_lens,
         max_new_tokens: int = 20,
         temperature: float = 1.0,
         eos_id: int = None,
@@ -170,7 +171,7 @@ class TtGPT(nn.Module):
         idx = ttnn.concat([idx, idx_next], dim=1)
 
         # Initialize current_pos tensor for decode
-        current_pos_torch = torch.tensor([prompt_len], dtype=torch.int32)
+        current_pos_torch = torch.tensor([prompt_len + 1], dtype=torch.int32)
         current_pos = ttnn.from_torch(
             current_pos_torch,
             device=self.device,
@@ -181,7 +182,7 @@ class TtGPT(nn.Module):
         # DECODE PHASE: Generate remaining tokens one at a time
         for _ in range(max_new_tokens - 1):
             # Forward decode with single token
-            tt_logits = self.forward_decode(idx_next, current_pos=current_pos)
+            tt_logits = self.forward_decode(idx_next, current_pos=current_pos, seq_lens=seq_lens)
 
             tt_logits = ttnn.squeeze(tt_logits, dim=1)
             last_logits = tt_logits[:, -1, :]

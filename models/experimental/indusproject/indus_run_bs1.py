@@ -24,11 +24,7 @@ if (
 ):
     store_weights(model_version=model_version, file_name=tt_cache_path, dtype=dtype, base_address=base_address)
 
-
 device = ttnn.device.open_device(device_id=0)
-
-tt_model = indus_model.TtGPT(config, device, tt_cache_path, dtype)
-print("✓ TT Model loaded!")
 
 # Test generate with chat template
 print("Testing TT generate function with chat template...")
@@ -52,9 +48,21 @@ user_prompt = """भारत के वर्तमान प्रधानम
 
 test_input_ids = format_template(user_prompt)
 print(f"Test input: {user_prompt}")
+B = test_input_ids.shape[0]
+seq_lens = test_input_ids.shape[1]
+seq_lens = ttnn.full(
+    (1,),
+    seq_lens,
+    dtype=ttnn.int32,
+    device=device,
+)
 
+tt_model = indus_model.TtGPT(config, device, tt_cache_path, dtype, B)
+print("✓ TT Model loaded!")
 
-output_ids = tt_model.generate(idx=test_input_ids, do_sample=False, max_new_tokens=32, eos_id=tokenizer.eos_token_id)
+output_ids = tt_model.generate(
+    idx=test_input_ids, do_sample=False, max_new_tokens=32, eos_id=tokenizer.eos_token_id, seq_lens=seq_lens
+)
 output_ids = ttnn.to_torch(output_ids)
 text = tokenizer.decode(output_ids[0].tolist(), skip_special_tokens=False)
 print(f"\nGenerated text:\n{text}")

@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import ttnn
 from models.common.helper_funcs import Linear
-
+from typing import Optional
 import ttnn
 
 import models.experimental.indusproject.tt.indus_block as indus_block
@@ -14,7 +14,7 @@ from models.experimental.indusproject.indusproject_utils import unpad_from_zero
 
 
 class TtGPT(nn.Module):
-    def __init__(self, config, device, tt_cache_path, dtype):
+    def __init__(self, config, device, tt_cache_path, dtype, B):
         super().__init__()
 
         assert config.vocab_size is not None
@@ -23,6 +23,7 @@ class TtGPT(nn.Module):
         self.config.block_size = 1024
         base_address = f"transformer"
         self.device = device
+        self.B = B
 
         self.beta = ttnn.load_tensor(tt_cache_path + base_address + ".ln_f.bias" + str(dtype) + ".tensorbin")
         self.beta = ttnn.to_device(self.beta, device)
@@ -43,7 +44,7 @@ class TtGPT(nn.Module):
         blocks = []
 
         for i in range(config.n_layer):
-            block = indus_block.TtBlock(self.config, f"{base_address}.h.{i}", self.device, tt_cache_path, dtype)
+            block = indus_block.TtBlock(self.config, f"{base_address}.h.{i}", self.device, tt_cache_path, dtype, B)
             blocks.append(block)
 
         self.h = nn.ModuleList(blocks)
@@ -69,7 +70,7 @@ class TtGPT(nn.Module):
 
         self.pos_cache = ttnn.embedding(self.tt_pos_cache, self.tt_wpe_weight)
 
-    def forward_prefill(self, idx, current_pos: int = 0) -> ttnn.Tensor:
+    def forward_prefill(self, idx, current_pos) -> ttnn.Tensor:
         """
         Prefill: Process entire prompt and populate KV cache
         idx: [batch, seq_len] token indices (TTNN tensor)
@@ -89,7 +90,7 @@ class TtGPT(nn.Module):
 
         # Pass through transformer blocks
         for block in self.h:
-            x = block.forward_prefill(x, current_pos=current_pos, idx=None, pad_mask=None)
+            x = block.forward_prefill(x, current_pos=current_pos)
 
         x = self.ln_f(x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
         logits = self.lm_head(x)
@@ -113,12 +114,13 @@ class TtGPT(nn.Module):
         pos_emb = self.pos_cache[:, pos_idx : pos_idx + 1, :]
 
         x = ttnn.add(tok_emb, pos_emb)
-        x = ttnn.unsqueeze(x, dim=1)
         x = ttnn.to_layout(x, ttnn.TILE_LAYOUT)
+        x = ttnn.unsqueeze(x, dim=1)
 
+        base_mask = self.h[0].attn.build_base_padding_mask(seq_lens)
         # Pass through transformer blocks with position tracking
         for block in self.h:
-            x = block.forward_decode(x, current_pos=current_pos, seq_lens=seq_lens)
+            x = block.forward_decode(x, current_pos=current_pos, base_mask=base_mask)
 
         x = self.ln_f(x, epsilon=1e-5, weight=self.gamma, bias=self.beta)
         logits = self.lm_head(x)
@@ -128,18 +130,13 @@ class TtGPT(nn.Module):
     def generate(
         self,
         idx,
-        seq_lens,
+        seq_lens: Optional = None,
         max_new_tokens: int = 20,
         temperature: float = 1.0,
         eos_id: int = None,
         do_sample: bool = False,  # keep greedy for now
         top_k=None,
     ):
-        """
-        Generate tokens autoregressively using KV cache
-        """
-        vocab_size = int(self.config.vocab_size)
-
         # Convert to TT once
         if not isinstance(idx, ttnn.Tensor):
             idx = ttnn.from_torch(
@@ -169,15 +166,10 @@ class TtGPT(nn.Module):
 
         # Concatenate generated token
         idx = ttnn.concat([idx, idx_next], dim=1)
-
-        # Initialize current_pos tensor for decode
-        current_pos_torch = torch.tensor([prompt_len + 1], dtype=torch.int32)
-        current_pos = ttnn.from_torch(
-            current_pos_torch,
-            device=self.device,
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
+        current_pos = ttnn.full(
+            (1,), prompt_len + 1, dtype=ttnn.int32, device=self.device, layout=ttnn.ROW_MAJOR_LAYOUT
         )
+        one = ttnn.full((1,), 1, dtype=ttnn.int32, device=self.device, layout=ttnn.ROW_MAJOR_LAYOUT)
 
         # DECODE PHASE: Generate remaining tokens one at a time
         for _ in range(max_new_tokens - 1):
@@ -194,15 +186,7 @@ class TtGPT(nn.Module):
 
             # Concatenate
             idx = ttnn.concat([idx, idx_next], dim=1)
-
-            # Increment position
-            current_pos_torch += 1
-            current_pos = ttnn.from_torch(
-                current_pos_torch,
-                device=self.device,
-                dtype=ttnn.int32,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
-            )
+            current_pos = ttnn.add(current_pos, one)
 
             # EOS handling
             if eos_id is not None:

@@ -18,6 +18,7 @@ build_*
 /python_env/
 CMakeUserPresets.json
 .session
+tt_metal/pre-compiled
 
 /llk_out/
 /out/
